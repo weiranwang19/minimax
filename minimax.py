@@ -95,9 +95,16 @@ class MinimaxGD(Optimizer):
         return [a + b for a, b in zip(vals1, vals2)]
 
     @torch.no_grad()
-    def compute_prox(self, vars, prox_func, prox_coeff):
+    def compute_prox(self, vals, prox_func, prox_coeff):
         # the prox_func shall solve min_x (1/2) |x - x_0|^2 + prox_coeff * fun(x)
-        return [prox_func(p, prox_coeff) for p in vars]
+        return [prox_func(p, prox_coeff) for p in vals]
+
+    @torch.no_grad()
+    def compute_norm(self, vals):
+        s = 0
+        for v in vals:
+            s += torch.sum(torch.square(v))
+        return torch.sqrt(s)
 
     def compute_h_bar_gradient(self, x_val, y_val):
         # We assume h_bar is already a function of x and y, e.g., h_bar forwards a model whose variables are x and y.
@@ -119,11 +126,13 @@ class MinimaxGD(Optimizer):
         self.assign_y(y_copy)
         return x_grad, y_grad
 
-    def compute_a_k(self, x_val, y_val, z_g_k, y_g_k):
+    def compute_a_k(self, x_val, y_val, z_g_k, y_g_k, return_h_hat_grad=False):
         # Top of page 25 of https://arxiv.org/pdf/2301.01716.
         x_grad, y_grad = self.compute_h_bar_gradient(x_val, y_val)
         x_grad_hat = self.add_vals(x_grad, self.scale_vals(x_val, - self.sigma_x))
         y_grad_hat = self.add_vals(y_grad, self.scale_vals(y_val, self.sigma_y))
+        if return_h_hat_grad:
+            return x_grad_hat, y_grad_hat
 
         x_tmp = self.add_vals(x_val, self.scale_vals(z_g_k, - 1 / self.sigma_x))
         a_x_k = self.add_vals(x_grad_hat, self.scale_vals(x_tmp, self.sigma_x / 2))
@@ -135,25 +144,130 @@ class MinimaxGD(Optimizer):
         return a_x_k, a_y_k
 
     def run(self):
-        z = z_f = self.scale_vals(self.get_x_copy(), - self.sigma_x)
-        y = y_f = self.get_y_copy()
 
-        # Main loop, line 1.
+        z_k = z_f_k = self.scale_vals(self.get_x_copy(), - self.sigma_x)
+        y_k = y_f_k = self.get_y_copy()
+
+        # Main loop, line 1
         for k in range(self.max_iter):
 
-            # line 2.
-            z_g_k = self.add_vals(self.scale_vals(z), self.alpha_bar,
-                                  self.scale_vals(z_f, 1 - self.alpha_bar))
-            y_g_k = self.add_vals(self.scale_vals(y), self.alpha_bar,
-                                  self.scale_vals(y_f, 1 - self.alpha_bar))
+            # line 2
+            z_g_k = self.add_vals(self.scale_vals(z_k), self.alpha_bar,
+                                  self.scale_vals(z_f_k, 1 - self.alpha_bar))
+            y_g_k = self.add_vals(self.scale_vals(y_k), self.alpha_bar,
+                                  self.scale_vals(y_f_k, 1 - self.alpha_bar))
 
-            # line 3.
+            # line 3
             x_k_m1 = self.scale_vals(z_g_k, - 1 / self.sigma_x)
             y_k_m1 = self.copy_vars(y_g_k)
 
             # line 4-7
             a_x_k, a_y_k = self.compute_a_k(x_k_m1, y_k_m1, z_g_k, y_g_k)
-            x_k_0 = self.add_vals(x_k_m1, self.scale_vals(a_x_k, - self.zeta * self.gamma_x))
-            x_tmp = self.compute_prox(self.prox_x, x_k_0, self.zeta * self.gamma_x)
+            x_tmp = self.add_vals(x_k_m1, self.scale_vals(a_x_k, - self.zeta * self.gamma_x))
             y_tmp = self.add_vals(y_k_m1, self.scale_vals(a_y_k, - self.zeta * self.gamma_y))
+            x_k_0 = x_k_t = self.compute_prox(self.prox_x, x_tmp, self.zeta * self.gamma_x)
+            y_k_0 = y_k_t = self.compute_prox(self.prox_y, y_tmp, self.zeta * self.gamma_y)
+            b_x_k_t = self.scale_vals(self.add_vals(x_tmp, self.scale_vals(x_k_t, -1)), 1/(self.zeta * self.gamma_x))
+            b_y_k_t = self.scale_vals(self.add_vals(y_tmp, self.scale_vals(y_k_t, -1)), 1/(self.zeta * self.gamma_y))
 
+            # line 8
+            t = 0
+            # the inner loop over t.
+
+            while True:
+
+                beta_t = self.lr * 2 / (t + 3)
+
+                # line 9
+                a_x_t, a_y_t = self.compute_a_k(x_k_t, y_k_t, z_g_k, y_g_k)
+                x_tmp = self.add_vals(a_x_t, b_x_k_t)
+                y_tmp = self.add_vals(a_y_t, b_y_k_t)
+                lhs = self.gamma_x * self.compute_norm(x_tmp) ** 2 + self.gamma_y * self.compute_norm(y_tmp) ** 2
+                rhs = (1 / self.gamma_x) * self.compute_norm(self.add_vals(x_k_t, self.scale_vals(x_k_m1, -1))) ** 2 + (1 / self.gamma_y) * self.compute_norm(self.add_vals(y_k_t, self.scale_vals(y_k_m1, -1))) ** 2
+                if lhs <= rhs:
+                    break
+
+                x_diff = self.add_vals(x_k_0, self.scale_vals(x_k_t, -1))
+                y_diff = self.add_vals(y_k_0, self.scale_vals(y_k_t, -1))
+
+                # line 10
+                x_k_t_half = self.add_vals(self.add_vals(x_k_t, self.scale_vals(x_diff, beta_t)), self.scale_vals(x_tmp, - self.zeta * self.gamma_x))
+                # line 11
+                y_k_t_half = self.add_vals(self.add_vals(y_k_t, self.scale_vals(y_diff, beta_t)), self.scale_vals(y_tmp, - self.zeta * self.gamma_y))
+
+                a_x_t, a_y_t = self.compute_a_k(x_k_t_half, y_k_t_half, z_g_k, y_g_k)
+                # line 12
+                x_k_tp1 = self.add_vals(self.add_vals(x_k_t, self.scale_vals(x_diff, beta_t)), self.scale_vals(a_x_t, - self.zeta * self.gamma_x))
+                x_k_tp1 = self.compute_prox(self.prox_x, x_k_tp1, self.zeta * self.gamma_x)
+                # line 13
+                y_k_tp1 = self.add_vals(self.add_vals(y_k_t, self.scale_vals(y_diff, beta_t)), self.scale_vals(a_y_t, - self.zeta * self.gamma_y))
+                y_k_tp1 = self.compute_prox(self.prox_y, y_k_tp1, self.zeta * self.gamma_y)
+
+                a_x_t, a_y_t = self.compute_a_k(x_k_tp1, y_k_tp1, z_g_k, y_g_k)
+                # line 14
+                b_x_k_tp1 = self.add_vals(x_k_t, self.scale_vals(x_diff, beta_t))
+                b_x_k_tp1 = self.add_vals(b_x_k_tp1, self.scale_vals(a_x_t, - self.zeta * self.gamma_x))
+                b_x_k_tp1 = self.add_vals(b_x_k_tp1, self.scale_vals(x_k_tp1, -1))
+                b_x_k_tp1 = self.scale_vals(b_x_k_tp1, 1/(self.zeta * self.gamma_x))
+                # line 15
+                b_y_k_tp1 = self.add_vals(y_k_t, self.scale_vals(y_diff, beta_t))
+                b_y_k_tp1 = self.add_vals(b_y_k_tp1, self.scale_vals(a_y_t, - self.zeta * self.gamma_y))
+                b_y_k_tp1 = self.add_vals(b_y_k_tp1, self.scale_vals(y_k_tp1, -1))
+                b_y_k_tp1 = self.scale_vals(b_y_k_tp1, 1/(self.zeta * self.gamma_y))
+
+                # line 16
+                t += 1
+                x_k_t = x_k_tp1
+                y_k_t = y_k_tp1
+                b_x_k_t = b_x_k_tp1
+                b_y_k_t = b_y_k_tp1
+
+            # line 18
+            x_f_kp1, y_f_kp1 = x_k_t, y_k_t
+
+            x_grad_hat, y_grad_hat = self.compute_a_k(self, x_f_kp1, y_f_kp1, None, None, return_h_hat_grad=True)
+            # line 19
+            z_f_kp1 = self.add_vals(x_grad_hat, b_x_k_t)
+            w_f_kp1 = self.add_vals(self.scale_vals(y_grad_hat, -1), b_y_k_t)
+
+            z_diff = self.add_vals(z_f_kp1, self.scale_vals(z_k, -1))
+            # line 20
+            z_kp1 = self.add_vals(z_k, self.scale_vals(z_diff, self.eta_z / self.gamma_x))
+            z_kp1 = self.add_vals(z_kp1, self.scale_vals(self.add_vals(x_f_kp1, self.scale_vals(z_f_kp1, 1 / self.sigma_x)), - self.eta_z))
+
+            y_diff = self.add_vals(y_f_kp1, self.scale_vals(y_k, -1))
+            # line 21
+            y_kp1 = self.add_vals(y_k, self.scale_vals(y_diff, self.eta_y * self.gamma_y))
+            y_kp1 = self.add_vals(y_kp1, self.scale_vals(self.add_vals(w_f_kp1, self.scale_vals(y_f_kp1, self.sigma_y)), - self.eta_y))
+            # line 22
+            x_kp1 = self.scale_vals(z_kp1, - 1 / self.sigma_x)
+            print(f"x={x_kp1}, y={y_kp1}")
+
+            x_grad, y_grad = self.compute_h_bar_gradient(x_kp1, y_kp1)
+            # line 23
+            x_hat_kp1 = self.add_vals(x_kp1, self.scale_vals(x_grad, - self.zeta_hat))
+            x_hat_kp1 = self.compute_prox(self.prox_x, x_hat_kp1, self.zeta_hat)
+            # line 24
+            y_hat_kp1 = self.add_vals(y_kp1, self.scale_vals(y_grad, self.zeta_hat))
+            y_hat_kp1 = self.compute_prox(self.prox_y, y_hat_kp1, self.zeta_hat)
+
+            # Final check
+            x_grad_hat, y_grad_hat = self.compute_h_bar_gradient(x_hat_kp1, y_hat_kp1)
+            grad_delta_x = self.add_vals(x_grad, self.scale_vals(x_grad_hat, -1))
+            delta_x = self.add_vals(x_kp1, self.scale_vals(x_hat_kp1, -1))
+            delta_x = self.add_vals(self.scale_vals(delta_x, 1 / self.zeta_hat), self.scale_vals(grad_delta_x, -1))
+            grad_delta_y = self.add_vals(y_grad, self.scale_vals(y_grad_hat, -1))
+            delta_y = self.add_vals(y_kp1, self.scale_vals(y_hat_kp1, -1))
+            delta_y = self.add_vals(self.scale_vals(delta_y, 1 / self.zeta_hat), self.scale_vals(grad_delta_y, -1))
+            # line 25
+            delta = self.compute_norm(delta_x + delta_y)
+            if delta < self.tol:
+                break
+
+            z_k = z_kp1
+            y_k = y_kp1
+            z_f_k = z_f_kp1
+            y_f_k = y_f_kp1
+
+        self.assign_x(x_kp1)
+        self.assign_y(y_kp1)
