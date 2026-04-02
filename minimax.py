@@ -45,6 +45,8 @@ class MinimaxGD(Optimizer):
         self.prox_x = prox_x
         self.prox_y = prox_y
 
+        assert  len(self.param_groups) == 2
+
         # 4. Initialize the internal state 'z' for all 'x' parameters
         self.z = []
         self.zf = []
