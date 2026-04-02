@@ -38,8 +38,11 @@ class MinimaxGD(Optimizer):
         self.eta_y = min(1/(2 * sigma_y), 4/(self.alpha_bar * sigma_x))
         self.lip = lip
         self.zeta = 1 / (2 * math.sqrt(5) * (1 + 8 * lip / sigma_x))
-        self.gamma_x = self.gamma_y = 8 / sigma_x
+        self.gamma_x = self.gamma_y = (8 / sigma_x)
         self.zeta_hat = min(sigma_x, sigma_y) / (lip ** 2)
+        print(f"alpha_bar={self.alpha_bar}, eta_z={self.eta_z}, eta_y={self.eta_y}, zeta={self.zeta}, gamma_x={self.gamma_x}, gamma_y={self.gamma_y}, zeta_hat={self.zeta_hat}")
+
+        self.lr = lr
         self.tol = tol
         self.max_iter = max_iter
 
@@ -165,9 +168,8 @@ class MinimaxGD(Optimizer):
             a_x_k, a_y_k = self.compute_a_k(x_k_m1, y_k_m1, z_g_k, y_g_k)
             x_tmp = self.add_vals(x_k_m1, self.scale_vals(a_x_k, - self.zeta * self.gamma_x))
             y_tmp = self.add_vals(y_k_m1, self.scale_vals(a_y_k, - self.zeta * self.gamma_y))
-            import pdb;pdb.set_trace()
-            x_k_0 = x_k_t = self.compute_prox(self.prox_x, x_tmp, self.zeta * self.gamma_x)
-            y_k_0 = y_k_t = self.compute_prox(self.prox_y, y_tmp, self.zeta * self.gamma_y)
+            x_k_0 = x_k_t = self.compute_prox(x_tmp, self.prox_x, self.zeta * self.gamma_x)
+            y_k_0 = y_k_t = self.compute_prox(y_tmp, self.prox_y, self.zeta * self.gamma_y)
             b_x_k_t = self.scale_vals(self.add_vals(x_tmp, self.scale_vals(x_k_t, -1)), 1/(self.zeta * self.gamma_x))
             b_y_k_t = self.scale_vals(self.add_vals(y_tmp, self.scale_vals(y_k_t, -1)), 1/(self.zeta * self.gamma_y))
 
@@ -176,8 +178,9 @@ class MinimaxGD(Optimizer):
             # the inner loop over t.
 
             while True:
-
-                beta_t = self.lr * 2 / (t + 3)
+                # beta_t = self.lr * 2 / (t + 3)
+                beta_t = self.lr
+                print(f"inner loop, t={t}, beta_t={beta_t}")
 
                 # line 9
                 a_x_t, a_y_t = self.compute_a_k(x_k_t, y_k_t, z_g_k, y_g_k)
@@ -185,6 +188,7 @@ class MinimaxGD(Optimizer):
                 y_tmp = self.add_vals(a_y_t, b_y_k_t)
                 lhs = self.gamma_x * self.compute_norm(x_tmp) ** 2 + self.gamma_y * self.compute_norm(y_tmp) ** 2
                 rhs = (1 / self.gamma_x) * self.compute_norm(self.add_vals(x_k_t, self.scale_vals(x_k_m1, -1))) ** 2 + (1 / self.gamma_y) * self.compute_norm(self.add_vals(y_k_t, self.scale_vals(y_k_m1, -1))) ** 2
+                print(f"inner check lhs={lhs}, rhs={rhs}")
                 if lhs <= rhs:
                     break
 
@@ -199,10 +203,10 @@ class MinimaxGD(Optimizer):
                 a_x_t, a_y_t = self.compute_a_k(x_k_t_half, y_k_t_half, z_g_k, y_g_k)
                 # line 12
                 x_k_tp1 = self.add_vals(self.add_vals(x_k_t, self.scale_vals(x_diff, beta_t)), self.scale_vals(a_x_t, - self.zeta * self.gamma_x))
-                x_k_tp1 = self.compute_prox(self.prox_x, x_k_tp1, self.zeta * self.gamma_x)
+                x_k_tp1 = self.compute_prox(x_k_tp1, self.prox_x, self.zeta * self.gamma_x)
                 # line 13
                 y_k_tp1 = self.add_vals(self.add_vals(y_k_t, self.scale_vals(y_diff, beta_t)), self.scale_vals(a_y_t, - self.zeta * self.gamma_y))
-                y_k_tp1 = self.compute_prox(self.prox_y, y_k_tp1, self.zeta * self.gamma_y)
+                y_k_tp1 = self.compute_prox(y_k_tp1, self.prox_y, self.zeta * self.gamma_y)
 
                 a_x_t, a_y_t = self.compute_a_k(x_k_tp1, y_k_tp1, z_g_k, y_g_k)
                 # line 14
@@ -220,6 +224,7 @@ class MinimaxGD(Optimizer):
                 t += 1
                 x_k_t = x_k_tp1
                 y_k_t = y_k_tp1
+                print(f"x_k_t={x_k_t}, y_k_t={y_k_t}")
                 b_x_k_t = b_x_k_tp1
                 b_y_k_t = b_y_k_tp1
 
@@ -242,15 +247,15 @@ class MinimaxGD(Optimizer):
             y_kp1 = self.add_vals(y_kp1, self.scale_vals(self.add_vals(w_f_kp1, self.scale_vals(y_f_kp1, self.sigma_y)), - self.eta_y))
             # line 22
             x_kp1 = self.scale_vals(z_kp1, - 1 / self.sigma_x)
-            print(f"x={x_kp1}, y={y_kp1}")
+            print(f"outer loop {k}, x={x_kp1}, y={y_kp1}")
 
             x_grad, y_grad = self.compute_h_bar_gradient(x_kp1, y_kp1)
             # line 23
             x_hat_kp1 = self.add_vals(x_kp1, self.scale_vals(x_grad, - self.zeta_hat))
-            x_hat_kp1 = self.compute_prox(self.prox_x, x_hat_kp1, self.zeta_hat)
+            x_hat_kp1 = self.compute_prox(x_hat_kp1, self.prox_x, self.zeta_hat)
             # line 24
             y_hat_kp1 = self.add_vals(y_kp1, self.scale_vals(y_grad, self.zeta_hat))
-            y_hat_kp1 = self.compute_prox(self.prox_y, y_hat_kp1, self.zeta_hat)
+            y_hat_kp1 = self.compute_prox(y_hat_kp1, self.prox_y, self.zeta_hat)
 
             # Final check
             x_grad_hat, y_grad_hat = self.compute_h_bar_gradient(x_hat_kp1, y_hat_kp1)

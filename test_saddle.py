@@ -13,12 +13,13 @@ lip=100
 
 def h_bar():
     loss = torch.sum(x*y) + (sigma_x/2) * torch.sum(x**2) - (sigma_y/2) * torch.sum(y**2)
+    print(f"loss={loss}")
     return loss
 
 def prox_bound(v, coeff):
     del coeff
     return torch.clamp(v, min=-1.0, max=1.0)
 
-opt = MinimaxGD([x],[y], h_bar, sigma_x, sigma_y, lip, prox_bound, prox_bound, 1e-3)
+opt = MinimaxGD([x],[y], h_bar, sigma_x, sigma_y, lip, prox_bound, prox_bound, 1e-3, 1e-3)
 
 opt.run()
