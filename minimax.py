@@ -152,9 +152,9 @@ class MinimaxGD(Optimizer):
         for k in range(self.max_iter):
 
             # line 2
-            z_g_k = self.add_vals(self.scale_vals(z_k), self.alpha_bar,
+            z_g_k = self.add_vals(self.scale_vals(z_k, self.alpha_bar),
                                   self.scale_vals(z_f_k, 1 - self.alpha_bar))
-            y_g_k = self.add_vals(self.scale_vals(y_k), self.alpha_bar,
+            y_g_k = self.add_vals(self.scale_vals(y_k, self.alpha_bar),
                                   self.scale_vals(y_f_k, 1 - self.alpha_bar))
 
             # line 3
@@ -165,6 +165,7 @@ class MinimaxGD(Optimizer):
             a_x_k, a_y_k = self.compute_a_k(x_k_m1, y_k_m1, z_g_k, y_g_k)
             x_tmp = self.add_vals(x_k_m1, self.scale_vals(a_x_k, - self.zeta * self.gamma_x))
             y_tmp = self.add_vals(y_k_m1, self.scale_vals(a_y_k, - self.zeta * self.gamma_y))
+            import pdb;pdb.set_trace()
             x_k_0 = x_k_t = self.compute_prox(self.prox_x, x_tmp, self.zeta * self.gamma_x)
             y_k_0 = y_k_t = self.compute_prox(self.prox_y, y_tmp, self.zeta * self.gamma_y)
             b_x_k_t = self.scale_vals(self.add_vals(x_tmp, self.scale_vals(x_k_t, -1)), 1/(self.zeta * self.gamma_x))

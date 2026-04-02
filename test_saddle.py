@@ -7,13 +7,18 @@ y = torch.randn(10, requires_grad=True)
 print(x)
 print(y)
 
-opt = MinimaxGD([x],[y], None,0.01, 0.01, 1, None, None, 1e-3)
+sigma_x = 0.1
+sigma_y = 0.1
+lip=100
 
-opt.scale_vals(opt.get_x(), 10)
-print(opt.get_x())
-print(opt.get_y())
+def h_bar():
+    loss = torch.sum(x*y) + (sigma_x/2) * torch.sum(x**2) - (sigma_y/2) * torch.sum(y**2)
+    return loss
 
-opt.assign_x(opt.scale_vals(opt.get_x(), 10))
-print(opt.get_x())
-print(opt.get_y())
+def prox_bound(v, coeff):
+    del coeff
+    return torch.clamp(v, min=-1.0, max=1.0)
 
+opt = MinimaxGD([x],[y], h_bar, sigma_x, sigma_y, lip, prox_bound, prox_bound, 1e-3)
+
+opt.run()
