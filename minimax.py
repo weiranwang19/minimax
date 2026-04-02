@@ -14,7 +14,7 @@ class MinimaxGD(Optimizer):
     This method optimizes a strongly-convex-strongly-concave function.
     """
 
-    def __init__(self, params_x, params_y, h_bar, sigma_x, sigma_y, lip, prox_x, prox_y, tol, lr=1e-3):
+    def __init__(self, params_x, params_y, h_bar, sigma_x, sigma_y, lip, prox_x, prox_y, tol, lr=1, max_iter=1000):
         # 1. Validate your hyperparameters
         # lr will be the initial step size maintained by learning rate scheduler.
         if lr < 0.0:
@@ -37,25 +37,16 @@ class MinimaxGD(Optimizer):
         self.eta_z = sigma_x / 2
         self.eta_y = min(1/(2 * sigma_y), 4/(self.alpha_bar * sigma_x))
         self.lip = lip
-        self.xi = 1 / (2 * math.sqrt(5) * (1 + 8 * lip / sigma_x))
+        self.zeta = 1 / (2 * math.sqrt(5) * (1 + 8 * lip / sigma_x))
         self.gamma_x = self.gamma_y = 8 / sigma_x
-        self.hat_xi = min(sigma_x, sigma_y) / (lip ** 2)
+        self.zeta_hat = min(sigma_x, sigma_y) / (lip ** 2)
         self.tol = tol
+        self.max_iter = max_iter
 
         self.prox_x = prox_x
         self.prox_y = prox_y
 
-        assert  len(self.param_groups) == 2
-
-        # 4. Initialize the internal state 'z' for all 'x' parameters
-        self.z = []
-        self.zf = []
-        # self.param_groups[0] corresponds to params_x
-        for p in self.param_groups[0]['params']:
-            # Use .clone().detach() to ensure z is a separate memory block,
-            # doesn't track gradients, but shares the same shape/device as p.
-            self.z.append(sigma_x * p.clone().detach())
-            self.zf.append(sigma_x * p.clone().detach())
+        assert len(self.param_groups) == 2
         print("Finished initialization!")
 
     def get_x(self):
@@ -128,50 +119,41 @@ class MinimaxGD(Optimizer):
         self.assign_y(y_copy)
         return x_grad, y_grad
 
-    # @torch.no_grad()
-    # def step(self):
-    #     """
-    #     Performs a single outer loop.
-    #     """
-    #
-    #     x = self.param_groups[0]
-    #         lr = group['lr']
-    #
-    #         # Iterate over the parameters within this group
-    #         for p in group['params']:
-    #             # Skip parameters that have no gradient computed
-    #             if p.grad is None:
-    #                 continue
-    #
-    #             grad = p.grad
-    #
-    #             # ==========================================
-    #             # State Initialization & Tracking
-    #             # ==========================================
-    #             state = self.state[p]
-    #
-    #             # If this is the first time we are updating this parameter,
-    #             # initialize its state variables.
-    #             if len(state) == 0:
-    #                 state['step'] = 0
-    #                 # Example of initializing a state tensor:
-    #                 # state['momentum_buffer'] = torch.zeros_like(p, memory_format=torch.preserve_format)
-    #
-    #             state['step'] += 1
-    #
-    #             # ==========================================
-    #             # The Update Math
-    #             # ==========================================
-    #
-    #             # 2. Compute the actual parameter update
-    #             # For SignSGD, we take the sign of the gradient
-    #             update = torch.sign(grad)
-    #
-    #             # 3. Apply the update to the parameter
-    #             # p = p - lr * update
-    #             p.sub_(update, alpha=lr)
-    #
-    #     return
-    #
+    def compute_a_k(self, x_val, y_val, z_g_k, y_g_k):
+        # Top of page 25 of https://arxiv.org/pdf/2301.01716.
+        x_grad, y_grad = self.compute_h_bar_gradient(x_val, y_val)
+        x_grad_hat = self.add_vals(x_grad, self.scale_vals(x_val, - self.sigma_x))
+        y_grad_hat = self.add_vals(y_grad, self.scale_vals(y_val, self.sigma_y))
 
+        x_tmp = self.add_vals(x_val, self.scale_vals(z_g_k, - 1 / self.sigma_x))
+        a_x_k = self.add_vals(x_grad_hat, self.scale_vals(x_tmp, self.sigma_x / 2))
+
+        y_tmp = self.add_vals(y_val, self.scale_vals(y_g_k, -1))
+        y_tmp = self.add_vals(self.scale_vals(y_val, self.sigma_y),
+                              self.scale_vals(y_tmp, self.sigma_x / 8))
+        a_y_k = self.add_vals(self.scale_vals(y_grad_hat, -1), y_tmp)
+        return a_x_k, a_y_k
+
+    def run(self):
+        z = z_f = self.scale_vals(self.get_x_copy(), - self.sigma_x)
+        y = y_f = self.get_y_copy()
+
+        # Main loop, line 1.
+        for k in range(self.max_iter):
+
+            # line 2.
+            z_g_k = self.add_vals(self.scale_vals(z), self.alpha_bar,
+                                  self.scale_vals(z_f, 1 - self.alpha_bar))
+            y_g_k = self.add_vals(self.scale_vals(y), self.alpha_bar,
+                                  self.scale_vals(y_f, 1 - self.alpha_bar))
+
+            # line 3.
+            x_k_m1 = self.scale_vals(z_g_k, - 1 / self.sigma_x)
+            y_k_m1 = self.copy_vars(y_g_k)
+
+            # line 4-7
+            a_x_k, a_y_k = self.compute_a_k(x_k_m1, y_k_m1, z_g_k, y_g_k)
+            x_k_0 = self.add_vals(x_k_m1, self.scale_vals(a_x_k, - self.zeta * self.gamma_x))
+            x_tmp = self.compute_prox(self.prox_x, x_k_0, self.zeta * self.gamma_x)
+            y_tmp = self.add_vals(y_k_m1, self.scale_vals(a_y_k, - self.zeta * self.gamma_y))
 
