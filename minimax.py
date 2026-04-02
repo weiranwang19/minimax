@@ -65,6 +65,27 @@ class MinimaxGD(Optimizer):
         return self.param_groups[1]['params']
 
     @torch.no_grad()
+    def copy_vars(self, vars):
+        # Returned tensors have no gradient.
+        return [p.clone().detach() for p in vars]
+
+    @torch.no_grad()
+    def get_x_copy(self):
+        return self.copy_vars(self.get_x())
+
+    @torch.no_grad()
+    def get_y_copy(self):
+        return self.copy_vars(self.get_y())
+
+    @torch.no_grad()
+    def get_x_grad(self):
+        return [p.grad for p in self.get_x()]
+
+    @torch.no_grad()
+    def get_y_grad(self):
+        return [p.grad for p in self.get_y()]
+
+    @torch.no_grad()
     def assign_x(self, val):
         for p, v in zip(self.param_groups[0]['params'], val):
             p.data.copy_(v)
@@ -75,14 +96,38 @@ class MinimaxGD(Optimizer):
             p.data.copy_(v)
 
     @torch.no_grad()
-    def scale_vars(self, vars, s):
-        return [s * p for p in vars]
+    def scale_vals(self, vals, s):
+        return [s * p for p in vals]
 
     @torch.no_grad()
-    def add_vars(self, vars1, vars2):
-        return [a + b for a, b in zip(vars1, vars2)]
+    def add_vals(self, vals1, vals2):
+        return [a + b for a, b in zip(vals1, vals2)]
 
-    #
+    @torch.no_grad()
+    def compute_prox(self, vars, prox_func, prox_coeff):
+        # the prox_func shall solve min_x (1/2) |x - x_0|^2 + prox_coeff * fun(x)
+        return [prox_func(p, prox_coeff) for p in vars]
+
+    def compute_h_bar_gradient(self, x_val, y_val):
+        # We assume h_bar is already a function of x and y, e.g., h_bar forwards a model whose variables are x and y.
+        # We temporarily assign x and y for computing the function value and gradient, and then restore the values back.
+        x_copy = self.get_x_copy()
+        y_copy = self.get_y_copy()
+        self.assign_x(x_val)
+        self.assign_y(y_val)
+
+        # If the h_bar is different during training, e.g., we compute loss on minibatch,
+        # then h_bar can take additional arguments.
+        loss = self.h_bar()
+        self.zero_grad()
+        loss.backward()
+        x_grad = self.get_x_grad()
+        y_grad = self.get_y_grad()
+
+        self.assign_x(x_copy)
+        self.assign_y(y_copy)
+        return x_grad, y_grad
+
     # @torch.no_grad()
     # def step(self):
     #     """

@@ -10,11 +10,11 @@ from minimax import MinimaxGD
 #
 # opt = MinimaxGD([x],[y], None,0.01, 0.01, 1, None, None, 1e-3)
 #
-# opt.scale_vars(opt.get_x(), 10)
+# opt.scale_vals(opt.get_x(), 10)
 # print(opt.get_x())
 # print(opt.get_y())
 #
-# opt.assign_x(opt.scale_vars(opt.get_x(), 10))
+# opt.assign_x(opt.scale_vals(opt.get_x(), 10))
 # print(opt.get_x())
 # print(opt.get_y())
 
@@ -50,17 +50,29 @@ predictions = model_y(inputs)
 loss_y = criterion(predictions, targets)
 print(f"Loss y: {loss_y.item()}")
 
-opt = MinimaxGD(model_x.parameters(), model_y.parameters(), None,0.01, 0.01, 1, None, None, 1e-3)
+def h_bar():
+    predictions = model_x(inputs)
+    loss_x = criterion(predictions, targets)
 
-print(opt.get_x())
-print(opt.get_y())
+    predictions = model_y(inputs)
+    loss_y = criterion(predictions, targets)
+    return loss_x - loss_y
+
+def prox_bound(v, coeff):
+    del coeff
+    return torch.clamp(v, min=0.0, max=1.0)
+
+opt = MinimaxGD(model_x.parameters(), model_y.parameters(), h_bar,0.01, 0.01, 1, None, None, 1e-3)
+
+print(f"x={opt.get_x()}")
+print(f"y={opt.get_y()}")
 
 # x is updated
-opt.assign_x(opt.scale_vars(opt.get_x(), 10))
-print(opt.get_x())
+opt.assign_x(opt.scale_vals(opt.get_x(), 10))
+print(f"x={opt.get_x()}")
 # but y is not updated
-opt.scale_vars(opt.get_y(), 100)
-print(opt.get_y())
+opt.scale_vals(opt.get_y(), 100)
+print(f"y={opt.get_y()}")
 
 # model_x is now changed
 predictions = model_x(inputs)
@@ -71,3 +83,8 @@ print(f"Loss: {loss_x.item()}")
 predictions = model_y(inputs)
 loss_y = criterion(predictions, targets)
 print(f"Loss y: {loss_y.item()}")
+
+print(opt.get_x_copy())
+
+x_grad, y_grad = opt.compute_h_bar_gradient(opt.get_x_copy(), opt.get_y_copy())
+print(f"y_grad: {y_grad}")
