@@ -200,25 +200,18 @@ class MinimaxGD(Optimizer):
                 # line 11
                 y_k_t_half = self.add_vals(self.add_vals(y_k_t, self.scale_vals(y_diff, beta_t)), self.scale_vals(y_tmp, - self.zeta * self.gamma_y))
 
-                a_x_t, a_y_t = self.compute_a_k(x_k_t_half, y_k_t_half, z_g_k, y_g_k)
+                a_x_t_half, a_y_t_half = self.compute_a_k(x_k_t_half, y_k_t_half, z_g_k, y_g_k)
                 # line 12
-                x_k_tp1 = self.add_vals(self.add_vals(x_k_t, self.scale_vals(x_diff, beta_t)), self.scale_vals(a_x_t, - self.zeta * self.gamma_x))
-                x_k_tp1 = self.compute_prox(x_k_tp1, self.prox_x, self.zeta * self.gamma_x)
+                x_k_tp1_before_prox = self.add_vals(self.add_vals(x_k_t, self.scale_vals(x_diff, beta_t)), self.scale_vals(a_x_t_half, - self.zeta * self.gamma_x))
+                x_k_tp1 = self.compute_prox(x_k_tp1_before_prox, self.prox_x, self.zeta * self.gamma_x)
                 # line 13
-                y_k_tp1 = self.add_vals(self.add_vals(y_k_t, self.scale_vals(y_diff, beta_t)), self.scale_vals(a_y_t, - self.zeta * self.gamma_y))
-                y_k_tp1 = self.compute_prox(y_k_tp1, self.prox_y, self.zeta * self.gamma_y)
+                y_k_tp1_before_prox = self.add_vals(self.add_vals(y_k_t, self.scale_vals(y_diff, beta_t)), self.scale_vals(a_y_t_half, - self.zeta * self.gamma_y))
+                y_k_tp1 = self.compute_prox(y_k_tp1_before_prox, self.prox_y, self.zeta * self.gamma_y)
 
-                a_x_t, a_y_t = self.compute_a_k(x_k_tp1, y_k_tp1, z_g_k, y_g_k)
                 # line 14
-                b_x_k_tp1 = self.add_vals(x_k_t, self.scale_vals(x_diff, beta_t))
-                b_x_k_tp1 = self.add_vals(b_x_k_tp1, self.scale_vals(a_x_t, - self.zeta * self.gamma_x))
-                b_x_k_tp1 = self.add_vals(b_x_k_tp1, self.scale_vals(x_k_tp1, -1))
-                b_x_k_tp1 = self.scale_vals(b_x_k_tp1, 1/(self.zeta * self.gamma_x))
+                b_x_k_tp1 = self.scale_vals(self.add_vals(x_k_tp1_before_prox, self.scale_vals(x_k_tp1, -1)), 1/(self.zeta * self.gamma_x))
                 # line 15
-                b_y_k_tp1 = self.add_vals(y_k_t, self.scale_vals(y_diff, beta_t))
-                b_y_k_tp1 = self.add_vals(b_y_k_tp1, self.scale_vals(a_y_t, - self.zeta * self.gamma_y))
-                b_y_k_tp1 = self.add_vals(b_y_k_tp1, self.scale_vals(y_k_tp1, -1))
-                b_y_k_tp1 = self.scale_vals(b_y_k_tp1, 1/(self.zeta * self.gamma_y))
+                b_y_k_tp1 = self.scale_vals(self.add_vals(y_k_tp1_before_prox, self.scale_vals(y_k_tp1, -1)), 1/(self.zeta * self.gamma_y))
 
                 # line 16
                 t += 1
@@ -231,7 +224,7 @@ class MinimaxGD(Optimizer):
             # line 18
             x_f_kp1, y_f_kp1 = x_k_t, y_k_t
 
-            x_grad_hat, y_grad_hat = self.compute_a_k(self, x_f_kp1, y_f_kp1, None, None, return_h_hat_grad=True)
+            x_grad_hat, y_grad_hat = self.compute_a_k(x_f_kp1, y_f_kp1, None, None, return_h_hat_grad=True)
             # line 19
             z_f_kp1 = self.add_vals(x_grad_hat, b_x_k_t)
             w_f_kp1 = self.add_vals(self.scale_vals(y_grad_hat, -1), b_y_k_t)
@@ -268,6 +261,8 @@ class MinimaxGD(Optimizer):
             # line 25
             delta = self.compute_norm(delta_x + delta_y)
             if delta < self.tol:
+                self.assign_x(x_kp1)
+                self.assign_y(y_kp1)
                 break
 
             z_k = z_kp1
@@ -275,5 +270,3 @@ class MinimaxGD(Optimizer):
             z_f_k = z_f_kp1
             y_f_k = y_f_kp1
 
-        self.assign_x(x_kp1)
-        self.assign_y(y_kp1)
