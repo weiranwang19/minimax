@@ -2,8 +2,6 @@ import math
 
 import torch
 from torch.optim import Optimizer
-import torch.optim.lr_scheduler as lr_scheduler
-
 
 class MinimaxGD(Optimizer):
     """
@@ -146,7 +144,7 @@ class MinimaxGD(Optimizer):
         a_y_k = self.add_vals(self.scale_vals(y_grad_hat, -1), y_tmp)
         return a_x_k, a_y_k
 
-    def run(self):
+    def run(self, debug=False):
 
         z_k = z_f_k = self.scale_vals(self.get_x_copy(), - self.sigma_x)
         y_k = y_f_k = self.get_y_copy()
@@ -159,7 +157,6 @@ class MinimaxGD(Optimizer):
                                   self.scale_vals(z_f_k, 1 - self.alpha_bar))
             y_g_k = self.add_vals(self.scale_vals(y_k, self.alpha_bar),
                                   self.scale_vals(y_f_k, 1 - self.alpha_bar))
-            print(f"k={k}, z_g_k={z_g_k}, y_g_k={y_g_k}")
 
             # line 3
             x_k_m1 = self.scale_vals(z_g_k, - 1 / self.sigma_x)
@@ -189,10 +186,9 @@ class MinimaxGD(Optimizer):
                 x_diff = self.add_vals(x_k_t, self.scale_vals(x_k_m1, -1))
                 y_diff = self.add_vals(y_k_t, self.scale_vals(y_k_m1, -1))
                 rhs = (1 / self.gamma_x) * self.compute_norm(x_diff) ** 2 + (1 / self.gamma_y) * self.compute_norm(y_diff) ** 2
-                if t % 100 == 0:
-                    print(f"k={k}, t={t}, beta_t={beta_t}: inner check lhs={lhs}, rhs={rhs}, x_k_t={x_k_t}, y_k_t={y_k_t}")
                 if lhs <= rhs:
-                    print(f"k={k}: inner check passed at t={t}, lhs={lhs}, rhs={rhs}")
+                    if debug:
+                        print(f"k={k}: inner check passed at t={t}, lhs={lhs}, rhs={rhs}")
                     break
 
                 x_diff = self.add_vals(x_k_0, self.scale_vals(x_k_t, -1))
@@ -225,7 +221,7 @@ class MinimaxGD(Optimizer):
                 y_k_t = y_k_tp1
                 b_x_k_t = b_x_k_tp1
                 b_y_k_t = b_y_k_tp1
-                if t % 100 == 0:
+                if t % 100 == 0 and debug:
                     print(f"inner loop, t={t}, beta_t={beta_t}")
                     print(f"inner check lhs={lhs}, rhs={rhs}")
                     print(f"x_k_t={x_k_t}, y_k_t={y_k_t}")
@@ -274,12 +270,13 @@ class MinimaxGD(Optimizer):
 
             # line 25
             delta = self.compute_norm(delta_x + delta_y)
-            # import pdb;pdb.set_trace()
-            print(f"outer loop {k}, x_kp1={x_kp1}, y_kp1={y_kp1}")
-            print(f"k={k}, x_grad={self.compute_norm(x_grad)}, y_grad={self.compute_norm(y_grad)}")
-            print(f"k={k}, final check norm: {delta}")
-            print(f"outer loop {k}, x_hat_kp1={x_hat_kp1}, y_hat_kp1={y_hat_kp1}")
+            if debug:
+                print(f"outer loop {k}, x_kp1={x_kp1}, y_kp1={y_kp1}")
+                print(f"k={k}, x_grad={self.compute_norm(x_grad)}, y_grad={self.compute_norm(y_grad)}")
+                print(f"k={k}, final check norm: {delta}")
             if delta < self.tol:
+                if debug:
+                    print(f"outer loop {k}, x_hat_kp1={x_hat_kp1}, y_hat_kp1={y_hat_kp1}")
                 self.assign_x(x_hat_kp1)
                 self.assign_y(y_hat_kp1)
                 break
