@@ -206,10 +206,12 @@ class MinimaxGD(Optimizer):
 
                 a_x_t_half, a_y_t_half = self.compute_a_k(x_k_t_half, y_k_t_half, z_g_k, y_g_k)
                 # line 12
-                x_k_tp1_before_prox = self.add_vals(self.add_vals(x_k_t, self.scale_vals(x_diff, beta_t)), self.scale_vals(a_x_t_half, - self.zeta * self.gamma_x))
+                x_k_tp1_before_prox = self.add_vals(x_k_t, self.scale_vals(x_diff, beta_t))
+                x_k_tp1_before_prox = self.add_vals(x_k_tp1_before_prox, self.scale_vals(a_x_t_half, - self.zeta * self.gamma_x))
                 x_k_tp1 = self.compute_prox(x_k_tp1_before_prox, self.prox_x, self.zeta * self.gamma_x)
                 # line 13
-                y_k_tp1_before_prox = self.add_vals(self.add_vals(y_k_t, self.scale_vals(y_diff, beta_t)), self.scale_vals(a_y_t_half, - self.zeta * self.gamma_y))
+                y_k_tp1_before_prox = self.add_vals(y_k_t, self.scale_vals(y_diff, beta_t))
+                y_k_tp1_before_prox = self.add_vals(y_k_tp1_before_prox, self.scale_vals(a_y_t_half, - self.zeta * self.gamma_y))
                 y_k_tp1 = self.compute_prox(y_k_tp1_before_prox, self.prox_y, self.zeta * self.gamma_y)
 
                 # line 14
@@ -230,7 +232,7 @@ class MinimaxGD(Optimizer):
 
             # line 18
             x_f_kp1, y_f_kp1 = x_k_t, y_k_t
-            print(f"outer loop {k}, x_f_kp1={x_f_kp1}, y_f_kp1={y_f_kp1}")
+
             x_grad_hat, y_grad_hat = self.compute_a_k(x_f_kp1, y_f_kp1, None, None, return_h_hat_grad=True)
             # line 19
             z_f_kp1 = self.add_vals(x_grad_hat, b_x_k_t)
