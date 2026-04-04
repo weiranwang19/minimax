@@ -178,9 +178,8 @@ class MinimaxGD(Optimizer):
             # the inner loop over t.
 
             while True:
-                # beta_t = self.lr * 2 / (t + 3)
-                beta_t = self.lr
-                print(f"inner loop, t={t}, beta_t={beta_t}")
+                beta_t = self.lr * 2 / (t + 3)
+                # beta_t = self.lr
 
                 # line 9
                 a_x_t, a_y_t = self.compute_a_k(x_k_t, y_k_t, z_g_k, y_g_k)
@@ -188,7 +187,6 @@ class MinimaxGD(Optimizer):
                 y_tmp = self.add_vals(a_y_t, b_y_k_t)
                 lhs = self.gamma_x * self.compute_norm(x_tmp) ** 2 + self.gamma_y * self.compute_norm(y_tmp) ** 2
                 rhs = (1 / self.gamma_x) * self.compute_norm(self.add_vals(x_k_t, self.scale_vals(x_k_m1, -1))) ** 2 + (1 / self.gamma_y) * self.compute_norm(self.add_vals(y_k_t, self.scale_vals(y_k_m1, -1))) ** 2
-                print(f"inner check lhs={lhs}, rhs={rhs}")
                 if lhs <= rhs:
                     break
 
@@ -217,9 +215,12 @@ class MinimaxGD(Optimizer):
                 t += 1
                 x_k_t = x_k_tp1
                 y_k_t = y_k_tp1
-                print(f"x_k_t={x_k_t}, y_k_t={y_k_t}")
                 b_x_k_t = b_x_k_tp1
                 b_y_k_t = b_y_k_tp1
+                if t % 100 == 0:
+                    print(f"inner loop, t={t}, beta_t={beta_t}")
+                    print(f"inner check lhs={lhs}, rhs={rhs}")
+                    print(f"x_k_t={x_k_t}, y_k_t={y_k_t}")
 
             # line 18
             x_f_kp1, y_f_kp1 = x_k_t, y_k_t
