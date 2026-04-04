@@ -197,11 +197,12 @@ class MinimaxGD(Optimizer):
 
                 x_diff = self.add_vals(x_k_0, self.scale_vals(x_k_t, -1))
                 y_diff = self.add_vals(y_k_0, self.scale_vals(y_k_t, -1))
-
                 # line 10
-                x_k_t_half = self.add_vals(self.add_vals(x_k_t, self.scale_vals(x_diff, beta_t)), self.scale_vals(x_tmp, - self.zeta * self.gamma_x))
+                x_k_t_half = self.add_vals(x_k_t, self.scale_vals(x_diff, beta_t))
+                x_k_t_half = self.add_vals(x_k_t_half, self.scale_vals(x_tmp, - self.zeta * self.gamma_x))
                 # line 11
-                y_k_t_half = self.add_vals(self.add_vals(y_k_t, self.scale_vals(y_diff, beta_t)), self.scale_vals(y_tmp, - self.zeta * self.gamma_y))
+                y_k_t_half = self.add_vals(y_k_t, self.scale_vals(y_diff, beta_t))
+                y_k_t_half = self.add_vals(y_k_t_half, self.scale_vals(y_tmp, - self.zeta * self.gamma_y))
 
                 a_x_t_half, a_y_t_half = self.compute_a_k(x_k_t_half, y_k_t_half, z_g_k, y_g_k)
                 # line 12
