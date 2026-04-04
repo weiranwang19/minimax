@@ -2,8 +2,8 @@ import torch
 from minimax import MinimaxGD
 
 # Setup simple test
-x = torch.randn(10, requires_grad=True)
-y = torch.randn(10, requires_grad=True)
+x = torch.rand(10, requires_grad=True)
+y = torch.rand(10, requires_grad=True)
 print(x)
 print(y)
 
@@ -18,7 +18,9 @@ def h_bar():
 
 def prox_bound(v, coeff):
     del coeff
-    return torch.clamp(v, min=-1.0, max=1.0)
+    return torch.clamp(v, min=-2.0, max=2.0)
+    # return v
+
 
 opt = MinimaxGD([x],[y], h_bar, sigma_x, sigma_y, lip, prox_bound, prox_bound, 1e-3, 1)
 

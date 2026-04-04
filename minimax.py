@@ -267,6 +267,8 @@ class MinimaxGD(Optimizer):
 
             # line 25
             delta = self.compute_norm(delta_x + delta_y)
+            import pdb;pdb.set_trace()
+            print(f"k={k}, x_grad={self.compute_norm(x_grad)}, y_grad={self.compute_norm(y_grad)}")
             print(f"k={k}, final check norm: {delta}")
             print(f"outer loop {k}, x_hat_kp1={x_hat_kp1}, y_hat_kp1={y_hat_kp1}")
             if delta < self.tol:
@@ -274,7 +276,9 @@ class MinimaxGD(Optimizer):
                 self.assign_y(y_hat_kp1)
                 break
 
-            z_k = self.scale_vals(x_hat_kp1, - self.sigma_x)
-            y_k = y_hat_kp1
+            # z_k = self.scale_vals(x_hat_kp1, - self.sigma_x)
+            # y_k = y_hat_kp1
+            z_k = z_kp1
+            y_k = y_kp1
             z_f_k = z_f_kp1
             y_f_k = y_f_kp1
