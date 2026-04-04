@@ -159,6 +159,7 @@ class MinimaxGD(Optimizer):
                                   self.scale_vals(z_f_k, 1 - self.alpha_bar))
             y_g_k = self.add_vals(self.scale_vals(y_k, self.alpha_bar),
                                   self.scale_vals(y_f_k, 1 - self.alpha_bar))
+            print(f"k={k}, z_g_k={z_g_k}, y_g_k={y_g_k}")
 
             # line 3
             x_k_m1 = self.scale_vals(z_g_k, - 1 / self.sigma_x)
@@ -175,12 +176,10 @@ class MinimaxGD(Optimizer):
 
             # line 8
             t = 0
-            # the inner loop over t.
 
+            # the inner loop over t.
             while True:
-                # beta_t = self.lr * 2 / (t + 3)
-                beta_t = self.lr
-                print(f"inner loop, t={t}, beta_t={beta_t}")
+                beta_t = self.lr * 2 / (t + 3)
 
                 # line 9
                 a_x_t, a_y_t = self.compute_a_k(x_k_t, y_k_t, z_g_k, y_g_k)
@@ -188,8 +187,10 @@ class MinimaxGD(Optimizer):
                 y_tmp = self.add_vals(a_y_t, b_y_k_t)
                 lhs = self.gamma_x * self.compute_norm(x_tmp) ** 2 + self.gamma_y * self.compute_norm(y_tmp) ** 2
                 rhs = (1 / self.gamma_x) * self.compute_norm(self.add_vals(x_k_t, self.scale_vals(x_k_m1, -1))) ** 2 + (1 / self.gamma_y) * self.compute_norm(self.add_vals(y_k_t, self.scale_vals(y_k_m1, -1))) ** 2
-                print(f"inner check lhs={lhs}, rhs={rhs}")
+                if t % 100 == 0:
+                    print(f"k={k}, t={t}, beta_t={beta_t}: inner check lhs={lhs}, rhs={rhs}, x_k_t={x_k_t}, y_k_t={y_k_t}")
                 if lhs <= rhs:
+                    print(f"k={k}: inner check passed at t={t}, lhs={lhs}, rhs={rhs}")
                     break
 
                 x_diff = self.add_vals(x_k_0, self.scale_vals(x_k_t, -1))
@@ -217,13 +218,12 @@ class MinimaxGD(Optimizer):
                 t += 1
                 x_k_t = x_k_tp1
                 y_k_t = y_k_tp1
-                print(f"x_k_t={x_k_t}, y_k_t={y_k_t}")
                 b_x_k_t = b_x_k_tp1
                 b_y_k_t = b_y_k_tp1
 
             # line 18
             x_f_kp1, y_f_kp1 = x_k_t, y_k_t
-
+            print(f"outer loop {k}, x_f_kp1={x_f_kp1}, y_f_kp1={y_f_kp1}")
             x_grad_hat, y_grad_hat = self.compute_a_k(x_f_kp1, y_f_kp1, None, None, return_h_hat_grad=True)
             # line 19
             z_f_kp1 = self.add_vals(x_grad_hat, b_x_k_t)
@@ -240,7 +240,7 @@ class MinimaxGD(Optimizer):
             y_kp1 = self.add_vals(y_kp1, self.scale_vals(self.add_vals(w_f_kp1, self.scale_vals(y_f_kp1, self.sigma_y)), - self.eta_y))
             # line 22
             x_kp1 = self.scale_vals(z_kp1, - 1 / self.sigma_x)
-            print(f"outer loop {k}, x={x_kp1}, y={y_kp1}")
+            print(f"outer loop {k}, x_kp1={x_kp1}, y_kp1={y_kp1}")
 
             x_grad, y_grad = self.compute_h_bar_gradient(x_kp1, y_kp1)
             # line 23
@@ -252,21 +252,25 @@ class MinimaxGD(Optimizer):
 
             # Final check
             x_grad_hat, y_grad_hat = self.compute_h_bar_gradient(x_hat_kp1, y_hat_kp1)
+
             grad_delta_x = self.add_vals(x_grad, self.scale_vals(x_grad_hat, -1))
             delta_x = self.add_vals(x_kp1, self.scale_vals(x_hat_kp1, -1))
             delta_x = self.add_vals(self.scale_vals(delta_x, 1 / self.zeta_hat), self.scale_vals(grad_delta_x, -1))
+
             grad_delta_y = self.add_vals(y_grad, self.scale_vals(y_grad_hat, -1))
-            delta_y = self.add_vals(y_kp1, self.scale_vals(y_hat_kp1, -1))
+            delta_y = self.add_vals(y_hat_kp1, self.scale_vals(y_kp1, -1))
             delta_y = self.add_vals(self.scale_vals(delta_y, 1 / self.zeta_hat), self.scale_vals(grad_delta_y, -1))
+
             # line 25
             delta = self.compute_norm(delta_x + delta_y)
+            print(f"k={k}, final check norm: {delta}")
+            print(f"outer loop {k}, x_hat_kp1={x_hat_kp1}, y_hat_kp1={y_hat_kp1}")
             if delta < self.tol:
-                self.assign_x(x_kp1)
-                self.assign_y(y_kp1)
+                self.assign_x(x_hat_kp1)
+                self.assign_y(y_hat_kp1)
                 break
 
-            z_k = z_kp1
-            y_k = y_kp1
+            z_k = self.scale_vals(x_hat_kp1, - self.sigma_x)
+            y_k = y_hat_kp1
             z_f_k = z_f_kp1
             y_f_k = y_f_kp1
-
