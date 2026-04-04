@@ -20,6 +20,6 @@ def prox_bound(v, coeff):
     del coeff
     return torch.clamp(v, min=-1.0, max=1.0)
 
-opt = MinimaxGD([x],[y], h_bar, sigma_x, sigma_y, lip, prox_bound, prox_bound, 1e-3)
+opt = MinimaxGD([x],[y], h_bar, sigma_x, sigma_y, lip, prox_bound, prox_bound, 1e-3, 1)
 
 opt.run()

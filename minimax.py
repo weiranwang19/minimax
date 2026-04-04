@@ -220,6 +220,10 @@ class MinimaxGD(Optimizer):
                 y_k_t = y_k_tp1
                 b_x_k_t = b_x_k_tp1
                 b_y_k_t = b_y_k_tp1
+                if t % 100 == 0:
+                    print(f"inner loop, t={t}, beta_t={beta_t}")
+                    print(f"inner check lhs={lhs}, rhs={rhs}")
+                    print(f"x_k_t={x_k_t}, y_k_t={y_k_t}")
 
             # line 18
             x_f_kp1, y_f_kp1 = x_k_t, y_k_t
