@@ -171,8 +171,8 @@ class MinimaxGD(Optimizer):
             y_tmp = self.add_vals(y_k_m1, self.scale_vals(a_y_k, - self.zeta * self.gamma_y))
             x_k_0 = x_k_t = self.compute_prox(x_tmp, self.prox_x, self.zeta * self.gamma_x)
             y_k_0 = y_k_t = self.compute_prox(y_tmp, self.prox_y, self.zeta * self.gamma_y)
-            b_x_k_t = self.scale_vals(self.add_vals(x_tmp, self.scale_vals(x_k_t, -1)), 1/(self.zeta * self.gamma_x))
-            b_y_k_t = self.scale_vals(self.add_vals(y_tmp, self.scale_vals(y_k_t, -1)), 1/(self.zeta * self.gamma_y))
+            b_x_k_t = self.scale_vals(self.add_vals(x_tmp, self.scale_vals(x_k_t, -1)), 1 / (self.zeta * self.gamma_x))
+            b_y_k_t = self.scale_vals(self.add_vals(y_tmp, self.scale_vals(y_k_t, -1)), 1 / (self.zeta * self.gamma_y))
 
             # line 8
             t = 0
@@ -186,7 +186,9 @@ class MinimaxGD(Optimizer):
                 x_tmp = self.add_vals(a_x_t, b_x_k_t)
                 y_tmp = self.add_vals(a_y_t, b_y_k_t)
                 lhs = self.gamma_x * self.compute_norm(x_tmp) ** 2 + self.gamma_y * self.compute_norm(y_tmp) ** 2
-                rhs = (1 / self.gamma_x) * self.compute_norm(self.add_vals(x_k_t, self.scale_vals(x_k_m1, -1))) ** 2 + (1 / self.gamma_y) * self.compute_norm(self.add_vals(y_k_t, self.scale_vals(y_k_m1, -1))) ** 2
+                x_diff = self.add_vals(x_k_t, self.scale_vals(x_k_m1, -1))
+                y_diff = self.add_vals(y_k_t, self.scale_vals(y_k_m1, -1))
+                rhs = (1 / self.gamma_x) * self.compute_norm(x_diff) ** 2 + (1 / self.gamma_y) * self.compute_norm(y_diff) ** 2
                 if t % 100 == 0:
                     print(f"k={k}, t={t}, beta_t={beta_t}: inner check lhs={lhs}, rhs={rhs}, x_k_t={x_k_t}, y_k_t={y_k_t}")
                 if lhs <= rhs:
