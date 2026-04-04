@@ -235,12 +235,12 @@ class MinimaxGD(Optimizer):
 
             z_diff = self.add_vals(z_f_kp1, self.scale_vals(z_k, -1))
             # line 20
-            z_kp1 = self.add_vals(z_k, self.scale_vals(z_diff, self.eta_z / self.gamma_x))
+            z_kp1 = self.add_vals(z_k, self.scale_vals(z_diff, self.eta_z / self.sigma_x))
             z_kp1 = self.add_vals(z_kp1, self.scale_vals(self.add_vals(x_f_kp1, self.scale_vals(z_f_kp1, 1 / self.sigma_x)), - self.eta_z))
 
             y_diff = self.add_vals(y_f_kp1, self.scale_vals(y_k, -1))
             # line 21
-            y_kp1 = self.add_vals(y_k, self.scale_vals(y_diff, self.eta_y * self.gamma_y))
+            y_kp1 = self.add_vals(y_k, self.scale_vals(y_diff, self.eta_y * self.sigma_y))
             y_kp1 = self.add_vals(y_kp1, self.scale_vals(self.add_vals(w_f_kp1, self.scale_vals(y_f_kp1, self.sigma_y)), - self.eta_y))
             # line 22
             x_kp1 = self.scale_vals(z_kp1, - 1 / self.sigma_x)
@@ -267,7 +267,7 @@ class MinimaxGD(Optimizer):
 
             # line 25
             delta = self.compute_norm(delta_x + delta_y)
-            import pdb;pdb.set_trace()
+            # import pdb;pdb.set_trace()
             print(f"k={k}, x_grad={self.compute_norm(x_grad)}, y_grad={self.compute_norm(y_grad)}")
             print(f"k={k}, final check norm: {delta}")
             print(f"outer loop {k}, x_hat_kp1={x_hat_kp1}, y_hat_kp1={y_hat_kp1}")
@@ -276,8 +276,6 @@ class MinimaxGD(Optimizer):
                 self.assign_y(y_hat_kp1)
                 break
 
-            # z_k = self.scale_vals(x_hat_kp1, - self.sigma_x)
-            # y_k = y_hat_kp1
             z_k = z_kp1
             y_k = y_kp1
             z_f_k = z_f_kp1
