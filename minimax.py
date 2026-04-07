@@ -72,7 +72,7 @@ class Minimax_SCSC(Optimizer):
     This method optimizes a strongly-convex-strongly-concave function.
     """
 
-    def __init__(self, params_x, params_y, h_bar, sigma_x, sigma_y, lip, prox_x, prox_y, tol, lr=1, max_iter=1000):
+    def __init__(self, params_x, params_y, h_bar, sigma_x, sigma_y, lip, prox_x, prox_y, tau, lr=1, max_iter=1000):
         # 1. Validate your hyperparameters
         # lr will be the initial step size maintained by learning rate scheduler.
         if lr < 0.0:
@@ -101,7 +101,7 @@ class Minimax_SCSC(Optimizer):
         print(f"alpha_bar={self.alpha_bar}, sigma_x={self.sigma_x}, sigma_y={self.sigma_y}, eta_z={self.eta_z}, eta_y={self.eta_y}, zeta={self.zeta}, gamma_x={self.gamma_x}, gamma_y={self.gamma_y}, zeta_hat={self.zeta_hat}")
 
         self.lr = lr
-        self.tol = tol
+        self.tau = tau
         self.max_iter = max_iter
 
         self.prox_x = prox_x
@@ -327,7 +327,7 @@ class Minimax_SCSC(Optimizer):
                 print(f"outer loop {k}, x_hat_kp1={x_hat_kp1}, y_hat_kp1={y_hat_kp1}")
                 print(f"outer loop k={k}, x_grad={compute_norm(x_grad)}, y_grad={compute_norm(y_grad)}")
                 print(f"outer loop k={k}, final check norm: {delta}")
-            if delta < self.tol:
+            if delta < self.tau:
                 break
 
             z_k = z_kp1
@@ -373,7 +373,8 @@ def optimize_NCWC(params_x, params_y, h_func, lip_h, D_y, prox_x, prox_y, epsilo
         lip_k = 3 * lip_h + epsilon / (2 * D_y)
         # print(f"K={k}, epsilon_k={epsilon_k}")
         # Variables params_x and params_y are updated by solver.rum().
-        solver = Minimax_SCSC(params_x, params_y, h_alg6, sigma_x=lip_h, sigma_y=sigma_y, lip=lip_k, prox_x=prox_x, prox_y=prox_y, tol=epsilon_k, lr=lr, max_iter=max_iter)
+        # Line 2
+        solver = Minimax_SCSC(params_x, params_y, h_alg6, sigma_x=lip_h, sigma_y=sigma_y, lip=lip_k, prox_x=prox_x, prox_y=prox_y, tau=epsilon_k, lr=lr, max_iter=max_iter)
         solver.run(debug=False)
         # At the end of run(), params_x and params_y are updated.
         x_kp1 = [p.clone().detach() for p in params_x]
@@ -427,6 +428,10 @@ def optimize_bilevel_constrained(
     z_params = [p.clone().detach().requires_grad_(True) for p in params_y]
 
     def h_alg4():
+        """
+        Defined in (33)
+        TODO: Should we include nonsmooth terms?
+        """
         upper_term = upper_smooth(params_x, params_y)
         lower_y = lower_smooth(params_x, params_y)
         lower_z = lower_smooth(params_x, z_params)
