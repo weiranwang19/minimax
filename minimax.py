@@ -11,9 +11,56 @@ def compute_norm(vals):
     return torch.sqrt(s)
 
 
+def _expand_prox_spec(prox_func, count):
+    if isinstance(prox_func, (list, tuple)):
+        if len(prox_func) != count:
+            raise ValueError(f"Expected {count} prox operators, got {len(prox_func)}")
+        return list(prox_func)
+    return [prox_func] * count
+
+
+def _scale_prox_operator(prox_func, scale):
+    if prox_func is None:
+        return None
+
+    def scaled(v, coeff, prox_func=prox_func, scale=scale):
+        return prox_func(v, scale * coeff)
+
+    return scaled
+
+
+def _scale_prox_spec(prox_func, scale):
+    if isinstance(prox_func, (list, tuple)):
+        return [_scale_prox_operator(p, scale) for p in prox_func]
+    return _scale_prox_operator(prox_func, scale)
+
+
+def _as_tensor_list(vals):
+    if torch.is_tensor(vals):
+        return [vals]
+    return list(vals)
+
+
+def _positive_part_norm_sq(vals):
+    total = None
+    for v in _as_tensor_list(vals):
+        term = torch.sum(torch.square(torch.clamp(v, min=0.0)))
+        total = term if total is None else total + term
+    if total is None:
+        raise ValueError("Expected at least one tensor when computing the positive-part norm")
+    return total
+
+
 def compute_prox(vals, prox_func, prox_coeff):
     # the prox_func shall solve min_x (1/2) |x - x_0|^2 + prox_coeff * fun(x)
-    return [prox_func(p, prox_coeff) for p in vals]
+    prox_funcs = _expand_prox_spec(prox_func, len(vals))
+    prox_vals = []
+    for p, prox in zip(vals, prox_funcs):
+        if prox is None:
+            prox_vals.append(p)
+        else:
+            prox_vals.append(prox(p, prox_coeff))
+    return prox_vals
 
 
 class Minimax_SCSC(Optimizer):
@@ -289,21 +336,27 @@ class Minimax_SCSC(Optimizer):
             y_f_k = y_f_kp1
 
 
-"""
-A custom PyTorch optimizer implementing the Algorithm 6 of
-    First-order penalty methods for bilevel optimization.
-https://arxiv.org/pdf/2301.01716
+def optimize_NCWC(params_x, params_y, h_func, lip_h, D_y, prox_x, prox_y, epsilon, epsilon_0=None, lr=1, max_iter=1000):
+    """
+    A custom PyTorch optimizer implementing the Algorithm 6 of
+        First-order penalty methods for bilevel optimization.
+    https://arxiv.org/pdf/2301.01716
 
-This method optimizes a non-convex-weakly-concave function.
-"""
-def optimize_NCWC(params_x, params_y, h_func, lip_h, D_y, prox_x, prox_y, epsilon, lr=1, max_iter=1000):
+    This method optimizes a non-convex-weakly-concave function.
+    """
     x_k = [p.clone().detach() for p in params_x]
     y_0 = [p.clone().detach() for p in params_y]
-    epsilon_0 = epsilon / 2
+    if epsilon_0 is None:
+        epsilon_0 = epsilon / 2
+    if epsilon_0 <= 0:
+        raise ValueError(f"Invalid epsilon_0: {epsilon_0}")
 
     for k in range(max_iter):
 
-        def h_k():
+        def h_alg6():
+            """
+            Defined in (102)
+            """
             f = h_func()
             s_y = 0
             for p, p0 in zip(params_y, y_0):
@@ -311,7 +364,7 @@ def optimize_NCWC(params_x, params_y, h_func, lip_h, D_y, prox_x, prox_y, epsilo
             s_x = 0
             for p, p0 in zip(params_x, x_k):
                 s_x += torch.sum(torch.square(p - p0))
-            f = f - epsilon / (4 * D_y) * s_y + lip_h * s_x
+            f = f - (epsilon * s_y) / (4 * D_y) + lip_h * s_x
             # print(f"h_k={f}")
             return f
 
@@ -320,7 +373,7 @@ def optimize_NCWC(params_x, params_y, h_func, lip_h, D_y, prox_x, prox_y, epsilo
         lip_k = 3 * lip_h + epsilon / (2 * D_y)
         # print(f"K={k}, epsilon_k={epsilon_k}")
         # Variables params_x and params_y are updated by solver.rum().
-        solver = Minimax_SCSC(params_x, params_y, h_k, sigma_x=lip_h, sigma_y=sigma_y, lip=lip_k, prox_x=prox_x, prox_y=prox_y, tol=epsilon_k, lr=lr, max_iter=max_iter)
+        solver = Minimax_SCSC(params_x, params_y, h_alg6, sigma_x=lip_h, sigma_y=sigma_y, lip=lip_k, prox_x=prox_x, prox_y=prox_y, tol=epsilon_k, lr=lr, max_iter=max_iter)
         solver.run(debug=False)
         # At the end of run(), params_x and params_y are updated.
         x_kp1 = [p.clone().detach() for p in params_x]
@@ -333,3 +386,83 @@ def optimize_NCWC(params_x, params_y, h_func, lip_h, D_y, prox_x, prox_y, epsilo
         # import pdb;pdb.set_trace()
 
         x_k = x_kp1
+
+
+def optimize_bilevel_constrained(
+    params_x,
+    params_y,
+    upper_smooth,
+    lower_smooth,
+    lower_constraints,
+    prox_x,
+    prox_y,
+    D_y,
+    L_grad_f1,
+    L_grad_ftilde1,
+    L_grad_gtilde,
+    L_gtilde,
+    gtilde_hi,
+    epsilon,
+    lr=1,
+    max_iter=1000,
+):
+    """
+    Algorithm 4 of the FOP paper, building the constrained penalty minimax problem and solving it through optimize_NCWC.
+
+    The optimization variables in the minimization block are the concatenated tuple (x, y),
+    while the maximization block is an internal copy of z initialized from y.
+    """
+    if epsilon <= 0 or epsilon > 0.25:
+        raise ValueError(f"Algorithm 4 requires epsilon in (0, 1/4], got {epsilon}")
+    if D_y <= 0:
+        raise ValueError(f"Invalid D_y: {D_y}")
+
+    params_x = list(params_x)
+    params_y = list(params_y)
+
+    rho = epsilon ** -1
+    mu = epsilon ** -2
+    epsilon_0 = epsilon ** (5 / 2)
+
+    z_params = [p.clone().detach().requires_grad_(True) for p in params_y]
+
+    def h_alg4():
+        upper_term = upper_smooth(params_x, params_y)
+        lower_y = lower_smooth(params_x, params_y)
+        lower_z = lower_smooth(params_x, z_params)
+        constraint_y = lower_constraints(params_x, params_y)
+        constraint_z = lower_constraints(params_x, z_params)
+        return (
+            upper_term
+            + rho * lower_y
+            + rho * mu * _positive_part_norm_sq(constraint_y)
+            - rho * lower_z
+            - rho * mu * _positive_part_norm_sq(constraint_z)
+        )
+
+    prox_hat = _expand_prox_spec(prox_x, len(params_x)) + _expand_prox_spec(
+        _scale_prox_spec(prox_y, rho), len(params_y)
+    )
+    prox_z = _expand_prox_spec(_scale_prox_spec(prox_y, rho), len(z_params))
+    params_hat = params_x + params_y
+
+    lip_h = (
+        L_grad_f1
+        + 2 * rho * L_grad_ftilde1
+        + 4 * rho * mu * (gtilde_hi * L_grad_gtilde + L_gtilde ** 2)
+    )
+
+    optimize_NCWC(
+        params_hat,
+        z_params,
+        h_alg4,
+        lip_h,
+        D_y,
+        prox_hat,
+        prox_z,
+        epsilon,
+        epsilon_0=epsilon_0,
+        lr=lr,
+        max_iter=max_iter,
+    )
+    return [p.clone().detach() for p in z_params]
