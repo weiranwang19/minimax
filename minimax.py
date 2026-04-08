@@ -12,16 +12,16 @@ def compute_norm(vals):
 
 
 def _expand_prox_spec(prox_func, count):
-    if isinstance(prox_func, (list, tuple)):
-        if len(prox_func) != count:
-            raise ValueError(f"Expected {count} prox operators, got {len(prox_func)}")
-        return list(prox_func)
+    # if isinstance(prox_func, (list, tuple)):
+    #     if len(prox_func) != count:
+    #         raise ValueError(f"Expected {count} prox operators, got {len(prox_func)}")
+    #     return list(prox_func)
     return [prox_func] * count
 
 
 def _scale_prox_operator(prox_func, scale):
-    if prox_func is None:
-        return None
+    # if prox_func is None:
+    #     return None
 
     def scaled(v, coeff, prox_func=prox_func, scale=scale):
         return prox_func(v, scale * coeff)
@@ -30,9 +30,13 @@ def _scale_prox_operator(prox_func, scale):
 
 
 def _scale_prox_spec(prox_func, scale):
-    if isinstance(prox_func, (list, tuple)):
-        return [_scale_prox_operator(p, scale) for p in prox_func]
-    return _scale_prox_operator(prox_func, scale)
+    # if isinstance(prox_func, (list, tuple)):
+    #     return [_scale_prox_operator(p, scale) for p in prox_func]
+
+    def scaled(v, coeff):
+        return prox_func(v, scale * coeff)
+    
+    return scaled  # _scale_prox_operator(prox_func, scale)
 
 
 def _as_tensor_list(vals):
@@ -52,13 +56,9 @@ def _positive_part_norm_sq(vals):
 
 
 def compute_prox(vals, prox_func, prox_coeff):
-    prox_funcs = _expand_prox_spec(prox_func, len(vals))
     prox_vals = []
     for p, prox in zip(vals, prox_funcs):
-        if prox is None:
-            prox_vals.append(p)
-        else:
-            prox_vals.append(prox(p, prox_coeff))
+        prox_vals.append(prox(p, prox_coeff))
     return prox_vals
 
 
@@ -473,7 +473,8 @@ def optimize_bilevel_constrained(
     epsilon_0 = epsilon ** (5 / 2)
 
     z_params = [p.clone().detach().requires_grad_(True) for p in params_y]
-
+    # TODO: DOUBLE CHECK THAT Z HAS GRADIENT.
+    
     def h_alg4():
         upper_term = upper_smooth(params_x, params_y)
         lower_y = lower_smooth(params_x, params_y)
