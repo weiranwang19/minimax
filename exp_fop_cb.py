@@ -1,6 +1,6 @@
-import contextlib
-import io
 import math
+import time
+import tqdm
 
 import torch
 from scipy.optimize import linprog
@@ -11,20 +11,26 @@ from minimax import optimize_bilevel_constrained
 torch.set_default_dtype(torch.float64)
 
 
-PROBLEM_SIZES = [(10 * k, 10 * k, 5 * k) for k in range(1, 11)]
-NUM_INSTANCES = 10
+# PROBLEM_SIZES = [(100 * k, 100 * k, 5 * k) for k in range(1, 11)]
+PROBLEM_SIZES = [(400, 400, 20)]
+NUM_INSTANCES = 1
 BASE_RHO = 5.0
-FINAL_EPS = 1e-4
-FEAS_TOL = 1e-4
-LOWER_GAP_TOL = 1e-4
+FINAL_EPS = 0.04
+FEAS_TOL = 1e-2
+LOWER_GAP_TOL = 1e-2
 SEED = 0
 VERBOSE = False
 MAX_OUTER_ITERS = 16
-ALG4_MAX_ITERS = 200
+MAX_APG_ITERS = 100
+ALG4_MAX_ITERS = 20
+SOLVER_LOG_EVERY = 1
+APG_LOG_EVERY = 250
+APG_PG_TOL_FACTOR = 0.1
+APG_OBJ_TOL_FACTOR = 0.1
 
-N = 200
-M = 200
-L = 10
+N = None
+M = None
+L = None
 C = None
 D = None
 D_TILDE = None
@@ -37,6 +43,7 @@ CURRENT_RHO = None
 CURRENT_MU = None
 CURRENT_EPS = None
 CURRENT_L_G = None
+CURRENT_B_NORM = None
 
 
 def prox_box(v, coeff):
@@ -66,12 +73,12 @@ def lower_constraints(x_params, z_params):
 
 
 def upper_objective(x_vec, y_vec):
-    return (torch.dot(C, x_vec) + torch.dot(D, y_vec)).item()
+    return float((torch.dot(C, x_vec) + torch.dot(D, y_vec)).item())
 
 
 def lower_objective(x_vec, z_vec):
     del x_vec
-    return torch.dot(D_TILDE, z_vec).item()
+    return float(torch.dot(D_TILDE, z_vec).item())
 
 
 def constraint_residual(x_vec, z_vec):
@@ -79,22 +86,32 @@ def constraint_residual(x_vec, z_vec):
 
 
 def feasibility_norm(x_vec, z_vec):
-    return torch.linalg.vector_norm(positive_part(constraint_residual(x_vec, z_vec))).item()
+    residual = positive_part(constraint_residual(x_vec, z_vec))
+    return float(torch.linalg.vector_norm(residual).item())
 
 
-def lower_penalty_value(x_vec, z_vec):
+def lower_penalty_objective(x_vec, z_vec):
     residual = positive_part(constraint_residual(x_vec, z_vec))
     return torch.dot(D_TILDE, z_vec) + CURRENT_MU * torch.sum(torch.square(residual))
 
 
-def compute_l_g():
-    return torch.linalg.matrix_norm(torch.cat([A_MAT, B_MAT], dim=1), ord=2).item()
+def lower_penalty_gradient(x_vec, z_vec):
+    residual = positive_part(constraint_residual(x_vec, z_vec))
+    return D_TILDE + 2.0 * CURRENT_MU * (B_MAT.T @ residual)
+
+
+def compute_joint_constraint_lipschitz():
+    return float(torch.linalg.matrix_norm(torch.cat([A_MAT, B_MAT], dim=1), ord=2).item())
+
+
+def compute_b_matrix_norm():
+    return float(torch.linalg.matrix_norm(B_MAT, ord=2).item())
 
 
 def compute_gtilde_hi():
     row_bounds = torch.sum(torch.abs(A_MAT), dim=1)
     row_bounds = row_bounds + torch.sum(torch.abs(B_MAT), dim=1) + torch.abs(B_VEC)
-    return torch.linalg.vector_norm(row_bounds).item()
+    return float(torch.linalg.vector_norm(row_bounds).item())
 
 
 def compute_d_y():
@@ -111,6 +128,7 @@ def sample_interior_box_point(dim):
 def generate_instance(problem_size):
     global N, M, L
     global C, D, D_TILDE, A_MAT, B_MAT, B_VEC, Y_HAT
+    global CURRENT_L_G, CURRENT_B_NORM
 
     N, M, L = problem_size
     C = torch.randn(N)
@@ -123,35 +141,85 @@ def generate_instance(problem_size):
     B_VEC = B_MAT @ Y_HAT
     D_TILDE = -B_MAT.T @ lam
 
+    CURRENT_L_G = compute_joint_constraint_lipschitz()
+    CURRENT_B_NORM = compute_b_matrix_norm()
 
-def apg_iteration_budget():
-    if CURRENT_EPS <= 0:
-        raise ValueError(f"Invalid CURRENT_EPS: {CURRENT_EPS}")
-    if CURRENT_L_G is None:
-        raise ValueError("CURRENT_L_G must be set before calling APG")
-    l_apg = 2.0 * CURRENT_MU * CURRENT_L_G * CURRENT_L_G
-    return max(1, math.ceil(math.sqrt(8.0 * l_apg * M / CURRENT_EPS)))
+
+def projected_gradient_mapping_norm(x_vec, z_vec, step_lip):
+    grad = lower_penalty_gradient(x_vec, z_vec)
+    prox_point = project_box(z_vec - grad / step_lip)
+    pg_norm = step_lip * torch.linalg.vector_norm(z_vec - prox_point)
+    return float(pg_norm.item()), prox_point
 
 
 def apg_warm_start(x_vec, z_init):
-    step_lip = max(2.0 * CURRENT_MU * CURRENT_L_G * CURRENT_L_G, 1.0)
-    z_prev = project_box(z_init.clone())
-    z_acc = z_prev.clone()
-    t_prev = 1.0
+    step_lip = max(2.0 * CURRENT_MU * CURRENT_B_NORM * CURRENT_B_NORM, 1e-12)
+    pg_tol = max(1e-8, APG_PG_TOL_FACTOR * CURRENT_EPS)
+    obj_tol = APG_OBJ_TOL_FACTOR * CURRENT_EPS
 
-    for _ in range(apg_iteration_budget()):
-        residual = positive_part(constraint_residual(x_vec, z_acc))
-        grad = D_TILDE + 2.0 * CURRENT_MU * (B_MAT.T @ residual)
-        z_next = project_box(z_acc - grad / step_lip)
-        t_next = 0.5 * (1.0 + math.sqrt(1.0 + 4.0 * t_prev * t_prev))
-        z_acc = z_next + ((t_prev - 1.0) / t_next) * (z_next - z_prev)
-        z_prev = z_next
-        t_prev = t_next
+    z_curr = project_box(z_init.clone())
+    y_curr = z_curr.clone()
+    t_curr = 1.0
+    curr_obj = float(lower_penalty_objective(x_vec, z_curr).item())
+    best_z = z_curr.clone()
+    best_obj = curr_obj
+    last_pg_norm = None
 
-    z_prev = project_box(z_prev)
-    if torch.any(torch.abs(z_prev) > 1.0 + 1e-10):
-        raise RuntimeError("APG warm start left the box constraints")
-    return z_prev
+    for apg_iter in range(1, MAX_APG_ITERS + 1):
+        grad = lower_penalty_gradient(x_vec, y_curr)
+        z_next = project_box(y_curr - grad / step_lip)
+        next_obj = float(lower_penalty_objective(x_vec, z_next).item())
+        restarted = False
+
+        if next_obj > curr_obj + 1e-12:
+            y_curr = z_curr.clone()
+            t_curr = 1.0
+            grad = lower_penalty_gradient(x_vec, y_curr)
+            z_next = project_box(y_curr - grad / step_lip)
+            next_obj = float(lower_penalty_objective(x_vec, z_next).item())
+            restarted = True
+
+        pg_norm = float((step_lip * torch.linalg.vector_norm(y_curr - z_next)).item())
+        delta_obj = abs(next_obj - curr_obj)
+
+        if next_obj < best_obj:
+            best_obj = next_obj
+            best_z = z_next.clone()
+
+        if VERBOSE and (apg_iter == 1 or apg_iter % APG_LOG_EVERY == 0):
+            print(
+                f"    APG iter={apg_iter} obj={next_obj:.3e} pg={pg_norm:.3e} restart={restarted}",
+                flush=True,
+            )
+
+        if pg_norm <= pg_tol and delta_obj <= obj_tol:
+            return best_z, {
+                "num_iters": apg_iter,
+                "terminated": True,
+                "best_obj": best_obj,
+                "pg_norm": pg_norm,
+            }
+
+        t_next = 0.5 * (1.0 + math.sqrt(1.0 + 4.0 * t_curr * t_curr))
+        y_next = z_next + ((t_curr - 1.0) / t_next) * (z_next - z_curr)
+        y_next = project_box(y_next)
+
+        z_curr = z_next
+        y_curr = y_next
+        t_curr = t_next
+        curr_obj = next_obj
+        last_pg_norm = pg_norm
+
+    print(
+        f"    APG warning: reached MAX_APG_ITERS={MAX_APG_ITERS} at epsilon={CURRENT_EPS:.3e}; using best iterate",
+        flush=True,
+    )
+    return best_z, {
+        "num_iters": MAX_APG_ITERS,
+        "terminated": False,
+        "best_obj": best_obj,
+        "pg_norm": last_pg_norm,
+    }
 
 
 def solve_lower_level_value(x_vec):
@@ -167,50 +235,52 @@ def solve_lower_level_value(x_vec):
     return float(result.fun)
 
 
-def quiet_solver_output():
-    if VERBOSE:
-        return contextlib.nullcontext()
-    return contextlib.redirect_stdout(io.StringIO())
-
-
-def run_single_instance():
-    global CURRENT_RHO, CURRENT_MU, CURRENT_EPS, CURRENT_L_G
+def run_single_instance(instance_idx):
+    global CURRENT_RHO, CURRENT_MU, CURRENT_EPS
 
     x_prev = torch.zeros(N)
     y_prev = Y_HAT.clone()
     y_tilde_prev = Y_HAT.clone()
-    initial_objective = upper_objective(x_prev, Y_HAT)
+    initial_objective = upper_objective(x_prev, y_prev)
     gtilde_hi = compute_gtilde_hi()
     d_y = compute_d_y()
 
-    for k in range(MAX_OUTER_ITERS):
+    # for k in range(MAX_OUTER_ITERS):
+    for k in tqdm.trange(MAX_OUTER_ITERS, desc=f"Instance {instance_idx + 1}/{NUM_INSTANCES}", unit="outer iter"):
         CURRENT_RHO = BASE_RHO ** (k + 1)
         CURRENT_MU = CURRENT_RHO ** 2
         CURRENT_EPS = 1.0 / CURRENT_RHO
-        CURRENT_L_G = compute_l_g()
 
-        y_tilde_prev = apg_warm_start(x_prev, y_tilde_prev)
+        if VERBOSE:
+            print(
+                f"  Instance {instance_idx + 1}: outer={k} rho={CURRENT_RHO:.3e} "
+                f"mu={CURRENT_MU:.3e} epsilon={CURRENT_EPS:.3e}",
+                flush=True,
+            )
+
+        y_tilde_prev, apg_stats = apg_warm_start(x_prev, y_tilde_prev)
 
         x_tensor = x_prev.clone().requires_grad_(True)
         y_tensor = y_tilde_prev.clone().requires_grad_(True)
-        with quiet_solver_output():
-            optimize_bilevel_constrained(
-                [x_tensor],
-                [y_tensor],
-                upper_smooth,
-                lower_smooth,
-                lower_constraints,
-                prox_box,
-                prox_box,
-                D_y=d_y,
-                L_grad_f1=0.0,
-                L_grad_ftilde1=0.0,
-                L_grad_gtilde=0.0,
-                L_gtilde=CURRENT_L_G,
-                gtilde_hi=gtilde_hi,
-                epsilon=CURRENT_EPS,
-                max_iter=ALG4_MAX_ITERS,
-            )
+        solver_result = optimize_bilevel_constrained(
+            [x_tensor],
+            [y_tensor],
+            upper_smooth,
+            lower_smooth,
+            lower_constraints,
+            prox_box,
+            prox_box,
+            D_y=d_y,
+            L_grad_f1=0.0,
+            L_grad_ftilde1=0.0,
+            L_grad_gtilde=0.0,
+            L_gtilde=CURRENT_L_G,
+            gtilde_hi=gtilde_hi,
+            epsilon=CURRENT_EPS,
+            max_iter=ALG4_MAX_ITERS,
+            verbose=VERBOSE,
+            log_every=SOLVER_LOG_EVERY,
+        )
 
         x_prev = x_tensor.detach().clone()
         y_prev = y_tensor.detach().clone()
@@ -223,47 +293,73 @@ def run_single_instance():
         feas = feasibility_norm(x_prev, y_prev)
         lower_star = solve_lower_level_value(x_prev)
         lower_gap = lower_objective(x_prev, y_prev) - lower_star
+        current_upper = upper_objective(x_prev, y_prev)
 
         if VERBOSE:
-            penalty_value = lower_penalty_value(x_prev, y_prev).item()
             print(
-                f"k={k} eps={CURRENT_EPS:.3e} feas={feas:.3e} "
-                f"gap={lower_gap:.3e} penalty={penalty_value:.3e}"
+                f"  Instance {instance_idx + 1}: outer={k} apg_iters={apg_stats['num_iters']} "
+                f"solver_outer={solver_result['solver_stats']['num_outer_iters']} "
+                f"feas={feas:.3e} gap={lower_gap:.3e} upper={current_upper:.3e}",
+                flush=True,
             )
 
         if CURRENT_EPS <= FINAL_EPS and feas <= FEAS_TOL and lower_gap <= LOWER_GAP_TOL:
-            return initial_objective, upper_objective(x_prev, y_prev)
+            return {
+                "initial_objective": initial_objective,
+                "final_objective": current_upper,
+                "num_outer_iters": k + 1,
+                "final_feas": feas,
+                "final_lower_gap": lower_gap,
+            }
 
     raise RuntimeError(
-        f"Instance did not satisfy the stopping rule after {MAX_OUTER_ITERS} outer iterations"
+        f"Instance {instance_idx + 1} did not satisfy the stopping rule after {MAX_OUTER_ITERS} outer iterations"
     )
 
 
 def run_problem_size(problem_size):
+    n_val, m_val, l_val = problem_size
+    print(f"Starting triple ({n_val}, {m_val}, {l_val})", flush=True)
+
     initial_values = []
     final_values = []
 
-    for _ in range(NUM_INSTANCES):
+    for instance_idx in range(NUM_INSTANCES):
         generate_instance(problem_size)
-        initial_value, final_value = run_single_instance()
-        initial_values.append(initial_value)
-        final_values.append(final_value)
-        print(f"Instance completed with initial objective {initial_value:.2f} and final objective {final_value:.2f}")
+        start_time = time.perf_counter()
+        result = run_single_instance(instance_idx)
+        elapsed = time.perf_counter() - start_time
+
+        initial_values.append(result["initial_objective"])
+        final_values.append(result["final_objective"])
+
+        print(
+            f"Completed instance {instance_idx + 1}/{NUM_INSTANCES} for ({n_val}, {m_val}, {l_val}) "
+            f"in {result['num_outer_iters']} outer iterations [{elapsed:.1f}s]: "
+            f"initial={result['initial_objective']:.2f} final={result['final_objective']:.2f} "
+            f"feas={result['final_feas']:.2e} gap={result['final_lower_gap']:.2e}",
+            flush=True,
+        )
 
     avg_initial = sum(initial_values) / len(initial_values)
     avg_final = sum(final_values) / len(final_values)
-    return avg_initial, avg_final
+    return {
+        "avg_initial": avg_initial,
+        "avg_final": avg_final,
+    }
 
 
 def run_experiment():
     torch.manual_seed(SEED)
-    print("n m l Initial objective value Final objective value")
+    print("n m l Initial objective value Final objective value", flush=True)
     results = []
+
     for problem_size in PROBLEM_SIZES:
-        avg_initial, avg_final = run_problem_size(problem_size)
+        stats = run_problem_size(problem_size)
         n_val, m_val, l_val = problem_size
-        print(f"{n_val} {m_val} {l_val} {avg_initial:.2f} {avg_final:.2f}")
-        results.append((problem_size, avg_initial, avg_final))
+        print(f"{n_val} {m_val} {l_val} {stats['avg_initial']:.2f} {stats['avg_final']:.2f}", flush=True)
+        results.append((problem_size, stats["avg_initial"], stats["avg_final"]))
+
     return results
 
 
