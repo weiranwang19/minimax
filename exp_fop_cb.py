@@ -82,6 +82,7 @@ def lower_objective(x_vec, z_vec):
 
 
 def constraint_residual(x_vec, z_vec):
+    # TODO: double check that you are passing in value of x and z. 
     return A_MAT @ x_vec + B_MAT @ z_vec - B_VEC
 
 
@@ -109,6 +110,7 @@ def compute_b_matrix_norm():
 
 
 def compute_gtilde_hi():
+    # TODO: UNDERSTAND THIS.
     row_bounds = torch.sum(torch.abs(A_MAT), dim=1)
     row_bounds = row_bounds + torch.sum(torch.abs(B_MAT), dim=1) + torch.abs(B_VEC)
     return float(torch.linalg.vector_norm(row_bounds).item())
@@ -153,6 +155,7 @@ def projected_gradient_mapping_norm(x_vec, z_vec, step_lip):
 
 
 def apg_warm_start(x_vec, z_init):
+    # TODO: monitor that this function finds initial y quickly to accuracy.
     step_lip = max(2.0 * CURRENT_MU * CURRENT_B_NORM * CURRENT_B_NORM, 1e-12)
     pg_tol = max(1e-8, APG_PG_TOL_FACTOR * CURRENT_EPS)
     obj_tol = APG_OBJ_TOL_FACTOR * CURRENT_EPS
@@ -222,6 +225,7 @@ def apg_warm_start(x_vec, z_init):
     }
 
 
+# TODO: replace with CVX.
 def solve_lower_level_value(x_vec):
     result = linprog(
         c=D_TILDE.detach().cpu().numpy(),
