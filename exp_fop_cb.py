@@ -11,9 +11,10 @@ from minimax import optimize_bilevel_constrained
 torch.set_default_dtype(torch.float64)
 
 
+# Section 4.2 / Table 2 experiment controls. `PROBLEM_SIZES` is the actual grid of (n, m, l) values; the rest are algorithmic parameters that can be tuned for better performance.
 # PROBLEM_SIZES = [(100 * k, 100 * k, 5 * k) for k in range(1, 11)]
 PROBLEM_SIZES = [(400, 400, 20)]
-NUM_INSTANCES = 1
+NUM_INSTANCES = 10
 BASE_RHO = 5.0
 FINAL_EPS = 0.04
 FEAS_TOL = 1e-2
@@ -28,6 +29,7 @@ APG_LOG_EVERY = 250
 APG_PG_TOL_FACTOR = 0.1
 APG_OBJ_TOL_FACTOR = 0.1
 
+# Global state placeholders for the current problem instance and iteration
 N = None
 M = None
 L = None
@@ -47,6 +49,7 @@ CURRENT_B_NORM = None
 
 
 def prox_box(v, coeff):
+    """Projection onto the box [-1, 1]^d used as the prox of the indicator."""
     del coeff
     return torch.clamp(v, min=-1.0, max=1.0)
 
@@ -60,15 +63,18 @@ def positive_part(v):
 
 
 def upper_smooth(x_params, y_params):
+    """Smooth upper objective term c^T x + d^T y."""
     return torch.dot(C, x_params[0]) + torch.dot(D, y_params[0])
 
 
 def lower_smooth(x_params, z_params):
+    """Smooth lower objective term d_tilde^T z."""
     del x_params
     return torch.dot(D_TILDE, z_params[0])
 
 
 def lower_constraints(x_params, z_params):
+    """Lower-level linear constraint map A x + B z - b."""
     return A_MAT @ x_params[0] + B_MAT @ z_params[0] - B_VEC
 
 
@@ -92,6 +98,7 @@ def feasibility_norm(x_vec, z_vec):
 
 
 def lower_penalty_objective(x_vec, z_vec):
+    """Penalized lower problem used to compute the APG warm start y_tilde."""
     residual = positive_part(constraint_residual(x_vec, z_vec))
     return torch.dot(D_TILDE, z_vec) + CURRENT_MU * torch.sum(torch.square(residual))
 
@@ -102,6 +109,7 @@ def lower_penalty_gradient(x_vec, z_vec):
 
 
 def compute_joint_constraint_lipschitz():
+    """Lipschitz constant L_gtilde for the joint constraint map g_tilde(x, y) = A x + B y - b."""
     return float(torch.linalg.matrix_norm(torch.cat([A_MAT, B_MAT], dim=1), ord=2).item())
 
 
@@ -121,6 +129,7 @@ def compute_d_y():
 
 
 def sample_interior_box_point(dim):
+    """Sample y_hat strictly inside the box so the lower KKT construction is simple."""
     while True:
         candidate = project_box(0.1 * torch.randn(dim))
         if torch.all(torch.abs(candidate) < 1.0):
@@ -128,10 +137,17 @@ def sample_interior_box_point(dim):
 
 
 def generate_instance(problem_size):
+    """
+    Generate one random constrained bilevel linear instance from Section 4.2.
+
+    The construction of `B_VEC` and `D_TILDE` makes `Y_HAT` an optimal
+    lower-level solution when x = 0.
+    """
     global N, M, L
     global C, D, D_TILDE, A_MAT, B_MAT, B_VEC, Y_HAT
     global CURRENT_L_G, CURRENT_B_NORM
-
+    
+    # Page 12 top
     N, M, L = problem_size
     C = torch.randn(N)
     D = torch.randn(M)
@@ -139,6 +155,7 @@ def generate_instance(problem_size):
     B_MAT = 0.01 * torch.randn(L, M)
     Y_HAT = sample_interior_box_point(M)
 
+    # Pick nonnegative multipliers and back out (b, d_tilde) so Y_HAT solves the lower problem at x = 0.
     lam = torch.abs(torch.randn(L))
     B_VEC = B_MAT @ Y_HAT
     D_TILDE = -B_MAT.T @ lam
@@ -174,6 +191,7 @@ def apg_warm_start(x_vec, z_init):
         next_obj = float(lower_penalty_objective(x_vec, z_next).item())
         restarted = False
 
+        # Restart when the accelerated point increases the objective.
         if next_obj > curr_obj + 1e-12:
             y_curr = z_curr.clone()
             t_curr = 1.0
@@ -227,6 +245,7 @@ def apg_warm_start(x_vec, z_init):
 
 # TODO: replace with CVX.
 def solve_lower_level_value(x_vec):
+    """Exact lower-level optimal value f_tilde^*(x) via LP for the stop check."""
     result = linprog(
         c=D_TILDE.detach().cpu().numpy(),
         A_ub=B_MAT.detach().cpu().numpy(),
@@ -240,6 +259,15 @@ def solve_lower_level_value(x_vec):
 
 
 def run_single_instance(instance_idx):
+    """
+    Run the practical outer loop for one random instance.
+
+    Each outer stage:
+    1. updates (rho_k, mu_k, epsilon_k),
+    2. computes a warm start y_tilde by APG,
+    3. calls Algorithm 4 / 6 through `optimize_bilevel_constrained`,
+    4. checks feasibility and the lower-level optimality gap.
+    """
     global CURRENT_RHO, CURRENT_MU, CURRENT_EPS
 
     x_prev = torch.zeros(N)
@@ -264,6 +292,7 @@ def run_single_instance(instance_idx):
 
         y_tilde_prev, apg_stats = apg_warm_start(x_prev, y_tilde_prev)
 
+        # The solver mutates these tensors in place to the next outer iterate.
         x_tensor = x_prev.clone().requires_grad_(True)
         y_tensor = y_tilde_prev.clone().requires_grad_(True)
         solver_result = optimize_bilevel_constrained(
@@ -322,6 +351,7 @@ def run_single_instance(instance_idx):
 
 
 def run_problem_size(problem_size):
+    """Average the paper's initial/final objective values over NUM_INSTANCES."""
     n_val, m_val, l_val = problem_size
     print(f"Starting triple ({n_val}, {m_val}, {l_val})", flush=True)
 
@@ -354,6 +384,7 @@ def run_problem_size(problem_size):
 
 
 def run_experiment():
+    """Main Table 2 driver over the requested size grid."""
     torch.manual_seed(SEED)
     print("n m l Initial objective value Final objective value", flush=True)
     results = []
