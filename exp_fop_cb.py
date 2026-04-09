@@ -118,7 +118,6 @@ def compute_b_matrix_norm():
 
 
 def compute_gtilde_hi():
-    # TODO: UNDERSTAND THIS.
     row_bounds = torch.sum(torch.abs(A_MAT), dim=1)
     row_bounds = row_bounds + torch.sum(torch.abs(B_MAT), dim=1) + torch.abs(B_VEC)
     return float(torch.linalg.vector_norm(row_bounds).item())
@@ -172,7 +171,7 @@ def projected_gradient_mapping_norm(x_vec, z_vec, step_lip):
 
 
 def apg_warm_start(x_vec, z_init):
-    # TODO: monitor that this function finds initial y quickly to accuracy.
+    # TODO: monitor that this function finds initial y quickly to high accuracy.
     step_lip = max(2.0 * CURRENT_MU * CURRENT_B_NORM * CURRENT_B_NORM, 1e-12)
     pg_tol = max(1e-8, APG_PG_TOL_FACTOR * CURRENT_EPS)
     obj_tol = APG_OBJ_TOL_FACTOR * CURRENT_EPS

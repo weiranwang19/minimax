@@ -12,51 +12,22 @@ def compute_norm(vals):
 
 
 def _expand_prox_spec(prox_func, count):
-    # if isinstance(prox_func, (list, tuple)):
-    #     if len(prox_func) != count:
-    #         raise ValueError(f"Expected {count} prox operators, got {len(prox_func)}")
-    #     return list(prox_func)
     return [prox_func] * count
 
 
-def _scale_prox_operator(prox_func, scale):
-    # if prox_func is None:
-    #     return None
-
-    def scaled(v, coeff, prox_func=prox_func, scale=scale):
-        return prox_func(v, scale * coeff)
-
-    return scaled
-
-
 def _scale_prox_spec(prox_func, scale):
-    # if isinstance(prox_func, (list, tuple)):
-    #     return [_scale_prox_operator(p, scale) for p in prox_func]
 
     def scaled(v, coeff):
         return prox_func(v, scale * coeff)
     
-    return scaled  # _scale_prox_operator(prox_func, scale)
+    return scaled
 
 
-def _as_tensor_list(vals):
-    if torch.is_tensor(vals):
-        return [vals]
-    return list(vals)
-
-
-def _positive_part_norm_sq(vals):
-    # total = None
-    # for v in _as_tensor_list(vals):
-    #     term = torch.sum(torch.square(torch.clamp(v, min=0.0)))
-    #     total = term if total is None else total + term
-    # if total is None:
-    #     raise ValueError("Expected at least one tensor when computing the positive-part norm")
-    # return total
+def _positive_part_norm_sq(v):
     return torch.sum(torch.square(torch.maximum(v, 0.0)))
 
 
-def compute_prox(vals, prox_func, prox_coeff):
+def compute_prox(vals, prox_funcs, prox_coeff):
     prox_vals = []
     for p, prox in zip(vals, prox_funcs):
         prox_vals.append(prox(p, prox_coeff))
@@ -523,6 +494,114 @@ def optimize_bilevel_constrained_fop(
         "z_eps": [p.clone().detach() for p in z_params],
         "rho": rho,
         "mu": mu,
+        "epsilon_0": epsilon_0,
+        "solver_stats": solver_stats,
+    }
+
+
+def optimize_bilevel_constrained_minimax(
+        params_x,
+        params_y1,
+        upper_smooth,
+        lower_smooth,
+        lower_constraints,
+        prox_x,
+        prox_y1,
+        D_y,
+        L_grad_f1,
+        L_grad_ftilde1,
+        L_grad_gtilde,
+        L_gtilde,
+        gtilde_hi,
+        epsilon,
+        lr=1,
+        max_iter=1000,
+        verbose=False,
+        log_every=1,
+):
+    """
+    Our proposed method for the constrained penalty reformulation.
+
+    The minimization block is the concatenated tuple (x, y), and z is the
+    internal maximization block initialized from y.
+
+    Using the Lagrangian formulation of the lower level problem, we solve only one instance of NCWC problem.
+
+    h computes the smooth part of the final upper levle minimax problem.
+    """
+    if D_y <= 0:
+        raise ValueError(f"Invalid D_y: {D_y}")
+    if log_every <= 0:
+        raise ValueError(f"Invalid log_every: {log_every}")
+
+    params_x = list(params_x)
+    params_y1 = list(params_y1)
+    if not params_x:
+        raise ValueError("params_x must contain at least one tensor")
+    if not params_y1:
+        raise ValueError("params_y must contain at least one tensor")
+
+    rho = epsilon ** -1
+    epsilon_0 = epsilon ** (3 / 2)
+
+    # Apply lower constraint once to get the number of constraints.
+    # The copy of y.
+    params_z1 = [p.clone().detach().requires_grad_(True) for p in params_y1]
+    tmp = lower_constraints(params_x, params_y1)
+    # Create and initialize the Lagrange multipliers.
+    params_y2 = [torch.zeros_like(tmp).requires_grad_(True)]
+    # The copy of y2.
+    params_z2 = [torch.zeros_like(tmp).requires_grad_(True)]
+
+    # prox operators for y2 and z2.
+    def prox_lagrange_multipliers(v, coeff):
+        del coeff
+        # Add the upper bound when we have it.
+        return torch.maximum(v, 0.0)
+
+    def h_lagrangian():
+        upper_term = upper_smooth(params_x, params_y1)
+        lower_z1_y2 = lower_smooth(params_x, params_z1) + torch.dot(params_y2[0], lower_constraints(params_x, params_z1))
+        lower_y1_z2 = lower_smooth(params_x, params_y1) + torch.dot(params_z2[0], lower_constraints(params_x, params_y1))
+        return (
+                upper_term
+                + rho * lower_y1_z2
+                - rho * lower_z1_y2
+        )
+
+    # We minimize over x, y1, y2 and maximize over z1, z2.
+    prox_x_y1_y2 = _expand_prox_spec(prox_x, len(params_x)) + _expand_prox_spec(
+        _scale_prox_spec(prox_y1, rho),
+        len(params_y1),
+    ) + [_scale_prox_spec(prox_lagrange_multipliers, rho)]
+    prox_z1_z2 = _expand_prox_spec(_scale_prox_spec(prox_y1, rho), len(params_z1)) + [_scale_prox_spec(prox_lagrange_multipliers, rho)]
+
+    lip_h = (
+            L_grad_f1
+            + 2 * rho * L_grad_ftilde1 # TODO: add the lipschitz from
+    )
+
+    solver_stats = optimize_NCWC(
+        params_x + params_y1 + params_y2,
+        params_z1 + params_z2,
+        h_lagrangian,
+        lip_h,
+        D_y,
+        prox_x_y1_y2,
+        prox_z1_z2,
+        epsilon,
+        epsilon_0,
+        lr=lr,
+        max_iter=max_iter,
+        verbose=verbose,
+        log_every=log_every,
+    )
+
+    # TODO: Monitor feasibility of lower level constraint, suboptimality of lower level, obj value.
+
+    return {
+        "z_eps": [p.clone().detach() for p in z_params],
+        "rho": rho,
         "epsilon_0": epsilon_0,
         "solver_stats": solver_stats,
     }
