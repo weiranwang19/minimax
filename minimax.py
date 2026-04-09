@@ -427,7 +427,7 @@ def optimize_NCWC(params_x, params_y, h_func, lip_h, D_y, prox_x, prox_y, epsilo
     }
 
 
-def optimize_bilevel_constrained(
+def optimize_bilevel_constrained_fop(
     params_x,
     params_y,
     upper_smooth,
