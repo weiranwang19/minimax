@@ -46,7 +46,6 @@ def _as_tensor_list(vals):
 
 
 def _positive_part_norm_sq(vals):
-<<<<<<< HEAD
     # total = None
     # for v in _as_tensor_list(vals):
     #     term = torch.sum(torch.square(torch.clamp(v, min=0.0)))
@@ -58,21 +57,6 @@ def _positive_part_norm_sq(vals):
 
 
 def compute_prox(vals, prox_func, prox_coeff):
-=======
-    total = None
-    for v in _as_tensor_list(vals):
-        term = torch.sum(torch.square(torch.clamp(v, min=0.0)))
-        # FIXME: check if g has none
-        total = term if total is None else total + term
-    if total is None:
-        raise ValueError("Expected at least one tensor when computing the positive-part norm")
-    return total
-
-
-def compute_prox(vals, prox_func, prox_coeff):
-    # FIXME: expand not necessary if prox_func is already a list/tuple of the right length
-    prox_funcs = _expand_prox_spec(prox_func, len(vals))
->>>>>>> 35ea467 (comments)
     prox_vals = []
     for p, prox in zip(vals, prox_funcs):
         prox_vals.append(prox(p, prox_coeff))
