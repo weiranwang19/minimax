@@ -23,11 +23,150 @@ def _scale_prox_spec(prox_func, scale):
     return scaled
 
 
+def _positive_part(v):
+    return torch.clamp(v, min=0.0)
+
+
 def _positive_part_norm_sq(v):
-    return torch.sum(torch.square(torch.maximum(v, 0.0)))
+    return torch.sum(torch.square(_positive_part(v)))
+
+
+def _clone_vals(vals, requires_grad=False):
+    return [p.clone().detach().requires_grad_(requires_grad) for p in vals]
+
+
+@torch.no_grad()
+def _assign_vals(params, values):
+    for p, v in zip(params, values):
+        p.data.copy_(v)
+
+
+def _scale_vals(vals, scale):
+    return [scale * v for v in vals]
+
+
+def _add_vals(vals1, vals2):
+    return [v1 + v2 for v1, v2 in zip(vals1, vals2)]
+
+
+def _blend_vals(vals1, vals2, coeff1, coeff2):
+    return [coeff1 * v1 + coeff2 * v2 for v1, v2 in zip(vals1, vals2)]
+
+
+def _normalize_prox_funcs(prox_func, count):
+    if isinstance(prox_func, (list, tuple)):
+        prox_funcs = list(prox_func)
+    else:
+        prox_funcs = _expand_prox_spec(prox_func, count)
+    if len(prox_funcs) != count:
+        raise ValueError(f"Expected {count} proximal operators, got {len(prox_funcs)}")
+    return prox_funcs
+
+
+def _normalize_tensor_list(values, count, name):
+    if torch.is_tensor(values):
+        values = [values]
+    else:
+        values = list(values)
+    if len(values) != count:
+        raise ValueError(f"{name} must contain exactly {count} tensors")
+    return [v.clone().detach() for v in values]
+
+
+def _normalize_multiplier(lambda0, reference):
+    if lambda0 is None:
+        return torch.zeros_like(reference)
+    if isinstance(lambda0, (list, tuple)):
+        if len(lambda0) != 1:
+            raise ValueError("lambda0 must be a tensor or a single-tensor sequence")
+        lambda0 = lambda0[0]
+    if not torch.is_tensor(lambda0):
+        raise TypeError("lambda0 must be a torch.Tensor")
+    if lambda0.shape != reference.shape:
+        raise ValueError(
+            f"lambda0 shape {tuple(lambda0.shape)} does not match constraints {tuple(reference.shape)}"
+        )
+    return lambda0.clone().detach()
+
+
+def _compute_value_and_grad(values, func):
+    working = _clone_vals(values, requires_grad=True)
+    loss = func(working)
+    grads = torch.autograd.grad(loss, working, allow_unused=True)
+    detached_grads = []
+    for v, g in zip(working, grads):
+        detached_grads.append(torch.zeros_like(v) if g is None else g.detach())
+    return loss.detach(), detached_grads
+
+
+def _alg_a1_iteration_bound(D_y, L_phi, eta):
+    if D_y <= 0:
+        raise ValueError(f"Invalid D_y: {D_y}")
+    if L_phi < 0:
+        raise ValueError(f"Invalid L_phi: {L_phi}")
+    if eta <= 0:
+        raise ValueError(f"Invalid eta: {eta}")
+    if L_phi == 0:
+        return 0
+    return int(math.ceil(D_y * math.sqrt((2.0 * L_phi) / eta)))
+
+
+def _solve_alg_a1_convex(
+    init_vals,
+    phi_func,
+    prox_func,
+    L_phi,
+    eta,
+    D_y,
+    max_iter=None,
+    objective_func=None,
+):
+    """
+    Algorithm A.1 for the convex composite lower warm-start subproblem.
+
+    The implementation uses the theorem-backed fixed iteration count from
+    Lemma 7 instead of the paper's explicit lower-bound stopping certificate.
+    """
+    if max_iter is not None and max_iter < 0:
+        raise ValueError(f"Invalid max_iter: {max_iter}")
+
+    init_vals = list(init_vals)
+    if not init_vals:
+        raise ValueError("init_vals must contain at least one tensor")
+
+    prox_funcs = _normalize_prox_funcs(prox_func, len(init_vals))
+    target_iters = _alg_a1_iteration_bound(D_y, L_phi, eta)
+    num_iters = target_iters if max_iter is None else min(target_iters, max_iter)
+
+    x_k = _clone_vals(init_vals)
+    z_k = _clone_vals(init_vals)
+
+    if L_phi > 0:
+        for k in range(num_iters):
+            y_k = _blend_vals(x_k, z_k, k / (k + 2), 2.0 / (k + 2))
+            _, grad_y = _compute_value_and_grad(y_k, phi_func)
+            prox_coeff = (k + 2) / (2.0 * L_phi)
+            prox_arg = _add_vals(z_k, _scale_vals(grad_y, -prox_coeff))
+            z_kp1 = compute_prox(prox_arg, prox_funcs, prox_coeff)
+            x_kp1 = _blend_vals(x_k, z_kp1, k / (k + 2), 2.0 / (k + 2))
+            x_k = x_kp1
+            z_k = z_kp1
+
+    final_vals = _clone_vals(x_k)
+    stats = {
+        "num_iters": num_iters,
+        "target_num_iters": target_iters,
+        "capped": num_iters != target_iters,
+        "terminated": num_iters == target_iters,
+    }
+    if objective_func is not None:
+        with torch.no_grad():
+            stats["final_objective"] = float(objective_func(final_vals).item())
+    return final_vals, stats
 
 
 def compute_prox(vals, prox_funcs, prox_coeff):
+    prox_funcs = _normalize_prox_funcs(prox_funcs, len(vals))
     prox_vals = []
     for p, prox in zip(vals, prox_funcs):
         prox_vals.append(prox(p, prox_coeff))
@@ -36,8 +175,8 @@ def compute_prox(vals, prox_funcs, prox_coeff):
 
 class Minimax_SCSC(Optimizer):
     """
-    Algorithm 5 of "First-order penalty methods for bilevel optimization"
-    for strongly-convex-strongly-concave minimax problems.
+    Algorithm 5 of FOP for strongly-convex-strongly-concave minimax problems.
+    Algorithm B.1 of SMO, inner solver reused by the higher-level wrappers.
     """
 
     def __init__(self, params_x, params_y, h_bar, sigma_x, sigma_y, lip, prox_x, prox_y, tau, lr=1, max_iter=1000, verbose=False, log_every=1):
@@ -316,8 +455,12 @@ class Minimax_SCSC(Optimizer):
 
 def optimize_NCWC(params_x, params_y, h_func, lip_h, D_y, prox_x, prox_y, epsilon, epsilon_0, lr=1, max_iter=1000, verbose=False, log_every=1):
     """
-    Algorithm 6 of "First-order penalty methods for bilevel optimization"
-    for non-convex-weakly-concave minimax problems.
+    Algorithm 6 of FOP for non-convex-weakly-concave minimax problems.
+
+    TODO: Verify correctness for SMO
+    Algorithm B.2 of SMO outer wrapper for the
+    sigma_y = 0 case: it repeatedly regularizes the minimax problem and calls
+    the strongly-convex-strongly-concave inner solver above.
     """
     if lip_h <= 0:
         raise ValueError(f"Invalid lip_h: {lip_h}")
@@ -339,7 +482,7 @@ def optimize_NCWC(params_x, params_y, h_func, lip_h, D_y, prox_x, prox_y, epsilo
     final_diff = None
     terminated = False
 
-    for k in tqdm.trange(max_iter, desc="optimize_NCWC", unit="outer iter"):
+    for k in tqdm.trange(max_iter, desc="optimize_NCWC", unit="outer iter", disable=not verbose):
 
         def h_alg6():
             f = h_func()
@@ -496,6 +639,169 @@ def optimize_bilevel_constrained_fop(
         "mu": mu,
         "epsilon_0": epsilon_0,
         "solver_stats": solver_stats,
+    }
+
+
+def optimize_bilevel_constrained_smo(
+    params_x,
+    params_y,
+    upper_smooth,
+    lower_smooth,
+    lower_constraints,
+    prox_x,
+    prox_y,
+    D_y,
+    L_grad_f1,
+    L_grad_ftilde1,
+    L_grad_gtilde,
+    L_gtilde,
+    gtilde_hi,
+    epsilon,
+    tau=0.8,
+    eta0=1.0,
+    lambda0=None,
+    z0=None,
+    warm_start_max_iter=None,
+    subproblem_max_iter=1000,
+    verbose=False,
+    log_every=1,
+):
+    """
+    TODO: Verify correctness
+    Algorithm 1 for the constrained bilevel reformulation in the sigma = 0 case.
+
+    The solver owns the full SMO outer loop. It warm-starts each lower subproblem
+    with Algorithm A.1 and solves each minimax stage via the existing B.2-style
+    NCWC wrapper.
+    """
+    if epsilon <= 0:
+        raise ValueError(f"Invalid epsilon: {epsilon}")
+    if not 0 < tau < 1:
+        raise ValueError(f"Invalid tau: {tau}")
+    if eta0 <= 0:
+        raise ValueError(f"Invalid eta0: {eta0}")
+    if D_y <= 0:
+        raise ValueError(f"Invalid D_y: {D_y}")
+    if subproblem_max_iter <= 0:
+        raise ValueError(f"Invalid subproblem_max_iter: {subproblem_max_iter}")
+    if warm_start_max_iter is not None and warm_start_max_iter < 0:
+        raise ValueError(f"Invalid warm_start_max_iter: {warm_start_max_iter}")
+    if log_every <= 0:
+        raise ValueError(f"Invalid log_every: {log_every}")
+
+    params_x = list(params_x)
+    params_y = list(params_y)
+    if not params_x:
+        raise ValueError("params_x must contain at least one tensor")
+    if not params_y:
+        raise ValueError("params_y must contain at least one tensor")
+
+    prox_x_funcs = _normalize_prox_funcs(prox_x, len(params_x))
+    prox_y_funcs = _normalize_prox_funcs(prox_y, len(params_y))
+    z_state = _clone_vals(params_y) if z0 is None else _normalize_tensor_list(z0, len(params_y), "z0")
+
+    with torch.no_grad():
+        constraint_template = lower_constraints(params_x, z_state)
+    lambda_k = _normalize_multiplier(lambda0, constraint_template)
+
+    history = []
+    num_outer_iters = 0
+    eta_k = eta0
+    while True:
+        rho_k = eta_k ** -1
+        pi_k = eta_k ** -3
+        lambda_norm = float(torch.linalg.vector_norm(lambda_k).item())
+
+        def smooth_lower_aug(z_vars):
+            constraint_z = lower_constraints(params_x, z_vars)
+            penalty = _positive_part_norm_sq(lambda_k + pi_k * constraint_z) / (2.0 * rho_k * pi_k)
+            return lower_smooth(params_x, z_vars) + penalty
+
+        L_hat_k = (
+            L_grad_ftilde1
+            + (pi_k * (L_gtilde ** 2 + gtilde_hi * L_grad_gtilde) + lambda_norm * L_grad_gtilde) / rho_k
+        )
+
+        y_init, warm_start_stats = _solve_alg_a1_convex(
+            _clone_vals(params_y),
+            smooth_lower_aug,
+            prox_y_funcs,
+            L_hat_k,
+            eta_k,
+            D_y,
+            max_iter=warm_start_max_iter,
+        )
+        _assign_vals(params_y, y_init)
+
+        z_params = _clone_vals(z_state, requires_grad=True)
+
+        def h_smo():
+            upper_term = upper_smooth(params_x, params_y)
+            lower_y = lower_smooth(params_x, params_y)
+            lower_z = lower_smooth(params_x, z_params)
+            constraint_y = lower_constraints(params_x, params_y)
+            constraint_z = lower_constraints(params_x, z_params)
+            penalty_y = _positive_part_norm_sq(lambda_k + pi_k * constraint_y) / (2.0 * pi_k)
+            penalty_z = _positive_part_norm_sq(lambda_k + pi_k * constraint_z) / (2.0 * pi_k)
+            return upper_term + rho_k * lower_y + penalty_y - rho_k * lower_z - penalty_z
+
+        prox_hat = prox_x_funcs + [_scale_prox_spec(p, rho_k) for p in prox_y_funcs]
+        prox_z = [_scale_prox_spec(p, rho_k) for p in prox_y_funcs]
+        L_k = (
+            L_grad_f1
+            + 2.0 * rho_k * L_grad_ftilde1
+            + 2.0 * pi_k * (L_gtilde ** 2 + gtilde_hi * L_grad_gtilde)
+            + 2.0 * lambda_norm * L_grad_gtilde
+        )
+        epsilon_0 = eta_k / (2.0 * math.sqrt(pi_k))
+
+        subproblem_stats = optimize_NCWC(
+            params_x + params_y,
+            z_params,
+            h_smo,
+            L_k,
+            D_y,
+            prox_hat,
+            prox_z,
+            eta_k,
+            epsilon_0,
+            max_iter=subproblem_max_iter,
+            verbose=verbose,
+            log_every=log_every,
+        )
+
+        z_state = _clone_vals(z_params)
+        with torch.no_grad():
+            lambda_next = _positive_part(lambda_k + pi_k * lower_constraints(params_x, z_state)).detach()
+        next_lambda_norm = float(torch.linalg.vector_norm(lambda_next).item())
+
+        history.append(
+            {
+                "outer_iter": num_outer_iters,
+                "eta": eta_k,
+                "rho": rho_k,
+                "pi": pi_k,
+                "lambda_norm": lambda_norm,
+                "warm_start_iters": warm_start_stats["num_iters"],
+                "warm_start_target_iters": warm_start_stats["target_num_iters"],
+                "warm_start_capped": warm_start_stats["capped"],
+                "subproblem_stats": subproblem_stats,
+                "next_lambda_norm": next_lambda_norm,
+            }
+        )
+
+        num_outer_iters += 1
+        lambda_k = lambda_next
+        if eta_k <= epsilon:
+            break
+        eta_k *= tau
+
+    return {
+        "z_eps": _clone_vals(z_state),
+        "lambda": lambda_k.clone().detach(),
+        "num_outer_iters": num_outer_iters,
+        "terminated": True,
+        "history": history,
     }
 
 

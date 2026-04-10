@@ -5,7 +5,7 @@ import tqdm
 import torch
 from scipy.optimize import linprog
 
-from minimax import optimize_bilevel_constrained
+from minimax import optimize_bilevel_constrained_fop, optimize_bilevel_constrained_smo
 
 
 torch.set_default_dtype(torch.float64)
@@ -15,8 +15,12 @@ torch.set_default_dtype(torch.float64)
 # PROBLEM_SIZES = [(100 * k, 100 * k, 5 * k) for k in range(1, 11)]
 PROBLEM_SIZES = [(400, 400, 20)]
 NUM_INSTANCES = 10
+SOLVER_METHOD = "smo"
 BASE_RHO = 5.0
 FINAL_EPS = 0.04
+SMO_EPS = 1e-2
+SMO_ETA0 = 1.0
+SMO_TAU = 0.8
 FEAS_TOL = 1e-2
 LOWER_GAP_TOL = 1e-2
 SEED = 0
@@ -24,6 +28,7 @@ VERBOSE = False
 MAX_OUTER_ITERS = 16
 MAX_APG_ITERS = 100
 ALG4_MAX_ITERS = 20
+SMO_SUBPROBLEM_MAX_ITERS = 20
 SOLVER_LOG_EVERY = 1
 APG_LOG_EVERY = 250
 APG_PG_TOL_FACTOR = 0.1
@@ -118,6 +123,7 @@ def compute_b_matrix_norm():
 
 
 def compute_gtilde_hi():
+    # TODO: what does this do?
     row_bounds = torch.sum(torch.abs(A_MAT), dim=1)
     row_bounds = row_bounds + torch.sum(torch.abs(B_MAT), dim=1) + torch.abs(B_VEC)
     return float(torch.linalg.vector_norm(row_bounds).item())
@@ -257,14 +263,14 @@ def solve_lower_level_value(x_vec):
     return float(result.fun)
 
 
-def run_single_instance(instance_idx):
+def run_single_instance_fop(instance_idx):
     """
-    Run the practical outer loop for one random instance.
+    Run the practical outer loop for one random instance with the FOP solver.
 
     Each outer stage:
     1. updates (rho_k, mu_k, epsilon_k),
     2. computes a warm start y_tilde by APG,
-    3. calls Algorithm 4 / 6 through `optimize_bilevel_constrained`,
+    3. calls Algorithm 4 / 6 through `optimize_bilevel_constrained_fop`,
     4. checks feasibility and the lower-level optimality gap.
     """
     global CURRENT_RHO, CURRENT_MU, CURRENT_EPS
@@ -294,7 +300,7 @@ def run_single_instance(instance_idx):
         # The solver mutates these tensors in place to the next outer iterate.
         x_tensor = x_prev.clone().requires_grad_(True)
         y_tensor = y_tilde_prev.clone().requires_grad_(True)
-        solver_result = optimize_bilevel_constrained(
+        solver_result = optimize_bilevel_constrained_fop(
             [x_tensor],
             [y_tensor],
             upper_smooth,
@@ -347,6 +353,80 @@ def run_single_instance(instance_idx):
     raise RuntimeError(
         f"Instance {instance_idx + 1} did not satisfy the stopping rule after {MAX_OUTER_ITERS} outer iterations"
     )
+
+
+def run_single_instance_smo(instance_idx):
+    """Run one SMO solve for the current random instance."""
+    initial_x = torch.zeros(N)
+    initial_y = Y_HAT.clone()
+    initial_objective = upper_objective(initial_x, initial_y)
+    gtilde_hi = compute_gtilde_hi()
+    d_y = compute_d_y()
+
+    x_tensor = initial_x.clone().requires_grad_(True)
+    y_tensor = initial_y.clone().requires_grad_(True)
+    solver_result = optimize_bilevel_constrained_smo(
+        [x_tensor],
+        [y_tensor],
+        upper_smooth,
+        lower_smooth,
+        lower_constraints,
+        prox_box,
+        prox_box,
+        D_y=d_y,
+        L_grad_f1=0.0,
+        L_grad_ftilde1=0.0,
+        L_grad_gtilde=0.0,
+        L_gtilde=CURRENT_L_G,
+        gtilde_hi=gtilde_hi,
+        epsilon=SMO_EPS,
+        tau=SMO_TAU,
+        eta0=SMO_ETA0,
+        subproblem_max_iter=SMO_SUBPROBLEM_MAX_ITERS,
+        verbose=VERBOSE,
+        log_every=SOLVER_LOG_EVERY,
+    )
+
+    x_final = x_tensor.detach().clone()
+    y_final = y_tensor.detach().clone()
+    if torch.any(torch.abs(x_final) > 1.0 + 1e-10):
+        raise RuntimeError("SMO iterate x left the box constraints")
+    if torch.any(torch.abs(y_final) > 1.0 + 1e-10):
+        raise RuntimeError("SMO iterate y left the box constraints")
+
+    feas = feasibility_norm(x_final, y_final)
+    lower_star = solve_lower_level_value(x_final)
+    lower_gap = lower_objective(x_final, y_final) - lower_star
+    current_upper = upper_objective(x_final, y_final)
+
+    if VERBOSE:
+        print(
+            f"  Instance {instance_idx + 1}: smo_outer={solver_result['num_outer_iters']} "
+            f"feas={feas:.3e} gap={lower_gap:.3e} upper={current_upper:.3e}",
+            flush=True,
+        )
+
+    if feas > FEAS_TOL or lower_gap > LOWER_GAP_TOL:
+        raise RuntimeError(
+            f"Instance {instance_idx + 1} SMO solve failed the stop check: "
+            f"feas={feas:.3e}, gap={lower_gap:.3e}"
+        )
+
+    return {
+        "initial_objective": initial_objective,
+        "final_objective": current_upper,
+        "num_outer_iters": solver_result["num_outer_iters"],
+        "final_feas": feas,
+        "final_lower_gap": lower_gap,
+    }
+
+
+def run_single_instance(instance_idx):
+    if SOLVER_METHOD == "fop":
+        return run_single_instance_fop(instance_idx)
+    if SOLVER_METHOD == "smo":
+        return run_single_instance_smo(instance_idx)
+    raise ValueError(f"Unknown SOLVER_METHOD: {SOLVER_METHOD}")
 
 
 def run_problem_size(problem_size):
