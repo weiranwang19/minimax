@@ -88,7 +88,6 @@ def lower_objective(x_vec, z_vec):
 
 
 def constraint_residual(x_vec, z_vec):
-    # TODO: double check that you are passing in value of x and z. 
     return A_MAT @ x_vec + B_MAT @ z_vec - B_VEC
 
 
@@ -171,7 +170,6 @@ def projected_gradient_mapping_norm(x_vec, z_vec, step_lip):
 
 
 def apg_warm_start(x_vec, z_init):
-    # TODO: monitor that this function finds initial y quickly to high accuracy.
     step_lip = max(2.0 * CURRENT_MU * CURRENT_B_NORM * CURRENT_B_NORM, 1e-12)
     pg_tol = max(1e-8, APG_PG_TOL_FACTOR * CURRENT_EPS)
     obj_tol = APG_OBJ_TOL_FACTOR * CURRENT_EPS
@@ -230,6 +228,7 @@ def apg_warm_start(x_vec, z_init):
         curr_obj = next_obj
         last_pg_norm = pg_norm
 
+    # TODO: monitor that this function finds initial y quickly to high accuracy. Pay attention to the results below.
     print(
         f"    APG warning: reached MAX_APG_ITERS={MAX_APG_ITERS} at epsilon={CURRENT_EPS:.3e}; using best iterate",
         flush=True,
@@ -242,7 +241,7 @@ def apg_warm_start(x_vec, z_init):
     }
 
 
-# TODO: replace with CVX.
+# TODO: replace with CVX if lower level problem is not linear programming.
 def solve_lower_level_value(x_vec):
     """Exact lower-level optimal value f_tilde^*(x) via LP for the stop check."""
     result = linprog(

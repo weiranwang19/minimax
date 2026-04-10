@@ -505,6 +505,7 @@ def optimize_bilevel_constrained_minimax(
         upper_smooth,
         lower_smooth,
         lower_constraints,
+        lagrange_bound,  # TODO: bound of Lagrange multipliers from strong Slater's condition.
         prox_x,
         prox_y1,
         D_y,
@@ -522,13 +523,9 @@ def optimize_bilevel_constrained_minimax(
     """
     Our proposed method for the constrained penalty reformulation.
 
-    The minimization block is the concatenated tuple (x, y), and z is the
-    internal maximization block initialized from y.
-
     Using the Lagrangian formulation of the lower level problem, we solve only one instance of NCWC problem.
-
-    h computes the smooth part of the final upper levle minimax problem.
     """
+
     if D_y <= 0:
         raise ValueError(f"Invalid D_y: {D_y}")
     if log_every <= 0:
@@ -541,6 +538,7 @@ def optimize_bilevel_constrained_minimax(
     if not params_y1:
         raise ValueError("params_y must contain at least one tensor")
 
+    # Note we are transforming the lower level problem into unconstrained minimax, so we use settings in Algorithm 2.
     rho = epsilon ** -1
     epsilon_0 = epsilon ** (3 / 2)
 
@@ -548,6 +546,7 @@ def optimize_bilevel_constrained_minimax(
     # The copy of y.
     params_z1 = [p.clone().detach().requires_grad_(True) for p in params_y1]
     tmp = lower_constraints(params_x, params_y1)
+    num_constraints = tmp.shape[0]
     # Create and initialize the Lagrange multipliers.
     params_y2 = [torch.zeros_like(tmp).requires_grad_(True)]
     # The copy of y2.
@@ -556,8 +555,11 @@ def optimize_bilevel_constrained_minimax(
     # prox operators for y2 and z2.
     def prox_lagrange_multipliers(v, coeff):
         del coeff
-        # Add the upper bound when we have it.
-        return torch.maximum(v, 0.0)
+        # Lagrange multipliers are non-negative.
+        v = torch.maximum(v, 0.0)
+        # Box constrains from Strong Slater condition.
+        v = torch.mininum(v, lagrange_bound)
+        return v
 
     def h_lagrangian():
         upper_term = upper_smooth(params_x, params_y1)
@@ -578,9 +580,13 @@ def optimize_bilevel_constrained_minimax(
 
     lip_h = (
             L_grad_f1
-            + 2 * rho * L_grad_ftilde1 # TODO: add the lipschitz from
+            + 2 * rho * L_grad_ftilde1
+            # TODO: it is best to tune another parameter in place of torch.sqrt(num_constraints) * lagrange_bound * L_grad_gtilde
+            + L_gtilde + torch.sqrt(num_constraints) * lagrange_bound * L_grad_gtilde
     )
 
+    # TODO: given we do not have additional outside loop, we have to monitor the progress by extracting progress from
+    # the optimize_NCWC procedure.
     solver_stats = optimize_NCWC(
         params_x + params_y1 + params_y2,
         params_z1 + params_z2,
