@@ -101,12 +101,13 @@ def feasibility_norm(x_vec, z_vec):
     return float(torch.linalg.vector_norm(residual).item())
 
 
+# Move these inside.
 def lower_penalty_objective(x_vec, z_vec):
     """Penalized lower problem used to compute the APG warm start y_tilde."""
     residual = positive_part(constraint_residual(x_vec, z_vec))
     return torch.dot(D_TILDE, z_vec) + CURRENT_MU * torch.sum(torch.square(residual))
 
-
+# Move inside fop.
 def lower_penalty_gradient(x_vec, z_vec):
     residual = positive_part(constraint_residual(x_vec, z_vec))
     return D_TILDE + 2.0 * CURRENT_MU * (B_MAT.T @ residual)
@@ -122,7 +123,6 @@ def compute_b_matrix_norm():
 
 
 def compute_gtilde_hi():
-    # TODO: what does this do?
     row_bounds = torch.sum(torch.abs(A_MAT), dim=1)
     row_bounds = row_bounds + torch.sum(torch.abs(B_MAT), dim=1) + torch.abs(B_VEC)
     return float(torch.linalg.vector_norm(row_bounds).item())

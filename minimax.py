@@ -53,6 +53,7 @@ def _blend_vals(vals1, vals2, coeff1, coeff2):
     return [coeff1 * v1 + coeff2 * v2 for v1, v2 in zip(vals1, vals2)]
 
 
+# TODO: remove.
 def _normalize_prox_funcs(prox_func, count):
     if isinstance(prox_func, (list, tuple)):
         prox_funcs = list(prox_func)
@@ -63,6 +64,7 @@ def _normalize_prox_funcs(prox_func, count):
     return prox_funcs
 
 
+# TODO: remove.
 def _normalize_tensor_list(values, count, name):
     if torch.is_tensor(values):
         values = [values]
@@ -73,6 +75,7 @@ def _normalize_tensor_list(values, count, name):
     return [v.clone().detach() for v in values]
 
 
+# TODO: remove.
 def _normalize_multiplier(lambda0, reference):
     if lambda0 is None:
         return torch.zeros_like(reference)
@@ -588,8 +591,7 @@ def optimize_bilevel_constrained_fop(
     epsilon_0 = epsilon ** (5 / 2)
 
     z_params = [p.clone().detach().requires_grad_(True) for p in params_y]
-    # TODO: DOUBLE CHECK THAT Z HAS GRADIENT.
-    
+
     def h_alg4():
         upper_term = upper_smooth(params_x, params_y)
         lower_y = lower_smooth(params_x, params_y)
@@ -873,8 +875,8 @@ def optimize_bilevel_constrained_minimax(
         lower_y1_z2 = lower_smooth(params_x, params_y1) + torch.dot(params_z2[0], lower_constraints(params_x, params_y1))
         return (
                 upper_term
-                + rho * lower_y1_z2
                 - rho * lower_z1_y2
+                + rho * lower_y1_z2
         )
 
     # We minimize over x, y1, y2 and maximize over z1, z2.
@@ -893,6 +895,7 @@ def optimize_bilevel_constrained_minimax(
 
     # TODO: given we do not have additional outside loop, we have to monitor the progress by extracting progress from
     # the optimize_NCWC procedure.
+    # Insert metric function, f(x,y_1), ~g(x,y1), ~f(x,y1)-~f*(x)
     solver_stats = optimize_NCWC(
         params_x + params_y1 + params_y2,
         params_z1 + params_z2,
