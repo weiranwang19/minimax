@@ -380,7 +380,7 @@ def run_single_instance_smo(instance_idx):
         gtilde_hi=gtilde_hi,
         epsilon=SMO_EPS,
         tau=SMO_TAU,
-        eta0=SMO_ETA0,
+        epsilon_0=SMO_ETA0,
         subproblem_max_iter=SMO_SUBPROBLEM_MAX_ITERS,
         verbose=VERBOSE,
         log_every=SOLVER_LOG_EVERY,

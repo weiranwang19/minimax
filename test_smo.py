@@ -129,7 +129,7 @@ def test_constrained_smo_smoke():
         gtilde_hi=instance["GTILDE_HI"],
         epsilon=0.1,
         tau=0.8,
-        eta0=1.0,
+        epsilon_0=1.0,
         z0=z0,
         subproblem_max_iter=8,
         verbose=False,

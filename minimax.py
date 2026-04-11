@@ -660,7 +660,7 @@ def optimize_bilevel_constrained_smo(
     gtilde_hi,
     epsilon,
     tau=0.8,
-    eta0=1.0,
+    epsilon_0=1.0,
     lambda0=None,
     z0=None,
     warm_start_max_iter=None,
@@ -680,8 +680,8 @@ def optimize_bilevel_constrained_smo(
         raise ValueError(f"Invalid epsilon: {epsilon}")
     if not 0 < tau < 1:
         raise ValueError(f"Invalid tau: {tau}")
-    if eta0 <= 0:
-        raise ValueError(f"Invalid eta0: {eta0}")
+    if epsilon_0 <= 0:
+        raise ValueError(f"Invalid epsilon0: {epsilon_0}")
     if D_y <= 0:
         raise ValueError(f"Invalid D_y: {D_y}")
     if subproblem_max_iter <= 0:
@@ -708,20 +708,20 @@ def optimize_bilevel_constrained_smo(
 
     history = []
     num_outer_iters = 0
-    eta_k = eta0
+    epsilon_k = epsilon_0
     while True:
-        rho_k = eta_k ** -1
-        pi_k = eta_k ** -3
+        rho_k = epsilon_k ** -1 # input
+        mu_k = epsilon_k ** -3 # input
         lambda_norm = float(torch.linalg.vector_norm(lambda_k).item())
 
         def smooth_lower_aug(z_vars):
             constraint_z = lower_constraints(params_x, z_vars)
-            penalty = _positive_part_norm_sq(lambda_k + pi_k * constraint_z) / (2.0 * rho_k * pi_k)
+            penalty = _positive_part_norm_sq(lambda_k + mu_k * constraint_z) / (2.0 * rho_k * mu_k)
             return lower_smooth(params_x, z_vars) + penalty
 
         L_hat_k = (
             L_grad_ftilde1
-            + (pi_k * (L_gtilde ** 2 + gtilde_hi * L_grad_gtilde) + lambda_norm * L_grad_gtilde) / rho_k
+            + (mu_k * (L_gtilde ** 2 + gtilde_hi * L_grad_gtilde) + lambda_norm * L_grad_gtilde) / rho_k
         )
 
         y_init, warm_start_stats = _solve_alg_a1_convex(
@@ -729,7 +729,7 @@ def optimize_bilevel_constrained_smo(
             smooth_lower_aug,
             prox_y_funcs,
             L_hat_k,
-            eta_k,
+            epsilon_k,
             D_y,
             max_iter=warm_start_max_iter,
         )
@@ -743,8 +743,8 @@ def optimize_bilevel_constrained_smo(
             lower_z = lower_smooth(params_x, z_params)
             constraint_y = lower_constraints(params_x, params_y)
             constraint_z = lower_constraints(params_x, z_params)
-            penalty_y = _positive_part_norm_sq(lambda_k + pi_k * constraint_y) / (2.0 * pi_k)
-            penalty_z = _positive_part_norm_sq(lambda_k + pi_k * constraint_z) / (2.0 * pi_k)
+            penalty_y = _positive_part_norm_sq(lambda_k + mu_k * constraint_y) / (2.0 * mu_k)
+            penalty_z = _positive_part_norm_sq(lambda_k + mu_k * constraint_z) / (2.0 * mu_k)
             return upper_term + rho_k * lower_y + penalty_y - rho_k * lower_z - penalty_z
 
         prox_hat = prox_x_funcs + [_scale_prox_spec(p, rho_k) for p in prox_y_funcs]
@@ -752,10 +752,10 @@ def optimize_bilevel_constrained_smo(
         L_k = (
             L_grad_f1
             + 2.0 * rho_k * L_grad_ftilde1
-            + 2.0 * pi_k * (L_gtilde ** 2 + gtilde_hi * L_grad_gtilde)
+            + 2.0 * mu_k * (L_gtilde ** 2 + gtilde_hi * L_grad_gtilde)
             + 2.0 * lambda_norm * L_grad_gtilde
         )
-        epsilon_0 = eta_k / (2.0 * math.sqrt(pi_k))
+        epsilon_0 = epsilon_k / (2.0 * math.sqrt(mu_k))
 
         subproblem_stats = optimize_NCWC(
             params_x + params_y,
@@ -765,7 +765,7 @@ def optimize_bilevel_constrained_smo(
             D_y,
             prox_hat,
             prox_z,
-            eta_k,
+            epsilon_k,
             epsilon_0,
             max_iter=subproblem_max_iter,
             verbose=verbose,
@@ -774,15 +774,15 @@ def optimize_bilevel_constrained_smo(
 
         z_state = _clone_vals(z_params)
         with torch.no_grad():
-            lambda_next = _positive_part(lambda_k + pi_k * lower_constraints(params_x, z_state)).detach()
+            lambda_next = _positive_part(lambda_k + mu_k * lower_constraints(params_x, z_state)).detach()
         next_lambda_norm = float(torch.linalg.vector_norm(lambda_next).item())
 
         history.append(
             {
                 "outer_iter": num_outer_iters,
-                "eta": eta_k,
-                "rho": rho_k,
-                "pi": pi_k,
+                "epsilon_k": epsilon_k,
+                "rho_k": rho_k,
+                "mu_k": mu_k,
                 "lambda_norm": lambda_norm,
                 "warm_start_iters": warm_start_stats["num_iters"],
                 "warm_start_target_iters": warm_start_stats["target_num_iters"],
@@ -794,9 +794,9 @@ def optimize_bilevel_constrained_smo(
 
         num_outer_iters += 1
         lambda_k = lambda_next
-        if eta_k <= epsilon:
+        if epsilon_k <= epsilon:
             break
-        eta_k *= tau
+        epsilon_k *= tau
 
     return {
         "z_eps": _clone_vals(z_state),
