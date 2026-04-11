@@ -629,6 +629,7 @@ def optimize_bilevel_constrained_smo(
     z0=None,
     warm_start_max_iter=None,
     subproblem_max_iter=1000,
+    stage_callback=None,
     verbose=False,
     log_every=1,
 ):
@@ -653,6 +654,8 @@ def optimize_bilevel_constrained_smo(
         raise ValueError(f"Invalid warm_start_max_iter: {warm_start_max_iter}")
     if log_every <= 0:
         raise ValueError(f"Invalid log_every: {log_every}")
+    if stage_callback is not None and not callable(stage_callback):
+        raise TypeError("stage_callback must be callable")
 
     params_x = list(params_x)
     params_y = list(params_y)
@@ -769,20 +772,31 @@ def optimize_bilevel_constrained_smo(
             lambda_next = _positive_part(lambda_k + mu_k * lower_constraints(params_x, z_state)).detach()
         next_lambda_norm = float(torch.linalg.vector_norm(lambda_next).item())
 
-        history.append(
-            {
-                "outer_iter": num_outer_iters,
-                "epsilon_k": epsilon_k,
-                "rho_k": rho_k,
-                "mu_k": mu_k,
-                "lambda_norm": lambda_norm,
-                "warm_start_iters": warm_start_stats["num_iters"],
-                "warm_start_target_iters": warm_start_stats["target_num_iters"],
-                "warm_start_capped": warm_start_stats["capped"],
-                "subproblem_stats": subproblem_stats,
-                "next_lambda_norm": next_lambda_norm,
-            }
-        )
+        stage_summary = {
+            "outer_iter": num_outer_iters,
+            "stage_index": num_outer_iters,
+            "epsilon_k": epsilon_k,
+            "rho_k": rho_k,
+            "mu_k": mu_k,
+            "lambda_norm": lambda_norm,
+            "warm_start_iters": warm_start_stats["num_iters"],
+            "warm_start_target_iters": warm_start_stats["target_num_iters"],
+            "warm_start_capped": warm_start_stats["capped"],
+            "subproblem_stats": subproblem_stats,
+            "next_lambda_norm": next_lambda_norm,
+        }
+        history.append(stage_summary)
+        if stage_callback is not None:
+            stage_callback(
+                {
+                    **stage_summary,
+                    "x": _clone_vals(params_x),
+                    "y": _clone_vals(params_y),
+                    "z": _clone_vals(z_state),
+                    "lambda": lambda_k.clone().detach(),
+                    "next_lambda": lambda_next.clone().detach(),
+                }
+            )
 
         num_outer_iters += 1
         lambda_k = lambda_next
