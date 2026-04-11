@@ -23,7 +23,7 @@ def test_alg_a1_convex_quadratic_box():
     target = torch.tensor([0.25, -0.4])
     init = [torch.tensor([1.0, -1.0])]
     d_y = 2.0 * math.sqrt(target.numel())
-    eta = 1e-3
+    epsilon = 1e-3
 
     def phi(vals):
         return 0.5 * torch.sum(torch.square(vals[0] - target))
@@ -36,14 +36,14 @@ def test_alg_a1_convex_quadratic_box():
         phi,
         prox_box,
         L_phi=1.0,
-        eta=eta,
+        epsilon=epsilon,
         D_y=d_y,
         objective_func=psi,
     )
 
     optimum = [target.clone()]
     objective_gap = float((psi(solution) - psi(optimum)).item())
-    assert objective_gap <= eta + 1e-8
+    assert objective_gap <= epsilon + 1e-8
     assert stats["num_iters"] == stats["target_num_iters"]
 
 

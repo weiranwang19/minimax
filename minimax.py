@@ -102,16 +102,19 @@ def _compute_value_and_grad(values, func):
     return loss.detach(), detached_grads
 
 
-def _alg_a1_iteration_bound(D_y, L_phi, eta):
+def _alg_a1_iteration_bound(D_y, L_phi, epsilon):
+    """
+    SMO Paper Theorem A.1.
+    """
     if D_y <= 0:
         raise ValueError(f"Invalid D_y: {D_y}")
     if L_phi < 0:
         raise ValueError(f"Invalid L_phi: {L_phi}")
-    if eta <= 0:
-        raise ValueError(f"Invalid eta: {eta}")
+    if epsilon <= 0:
+        raise ValueError(f"Invalid epsilon: {epsilon}")
     if L_phi == 0:
         return 0
-    return int(math.ceil(D_y * math.sqrt((2.0 * L_phi) / eta)))
+    return int(math.ceil(D_y * math.sqrt((2.0 * L_phi) / epsilon)))
 
 
 def _solve_alg_a1_convex(
@@ -119,7 +122,7 @@ def _solve_alg_a1_convex(
     phi_func,
     prox_func,
     L_phi,
-    eta,
+    epsilon,
     D_y,
     max_iter=None,
     objective_func=None,
@@ -138,7 +141,7 @@ def _solve_alg_a1_convex(
         raise ValueError("init_vals must contain at least one tensor")
 
     prox_funcs = _normalize_prox_funcs(prox_func, len(init_vals))
-    target_iters = _alg_a1_iteration_bound(D_y, L_phi, eta)
+    target_iters = _alg_a1_iteration_bound(D_y, L_phi, epsilon)
     num_iters = target_iters if max_iter is None else min(target_iters, max_iter)
 
     x_k = _clone_vals(init_vals)
@@ -149,6 +152,7 @@ def _solve_alg_a1_convex(
             y_k = _blend_vals(x_k, z_k, k / (k + 2), 2.0 / (k + 2))
             _, grad_y = _compute_value_and_grad(y_k, phi_func)
             prox_coeff = (k + 2) / (2.0 * L_phi)
+            # essentially prox_arg = z_k - prox_coeff * grad_y
             prox_arg = _add_vals(z_k, _scale_vals(grad_y, -prox_coeff))
             z_kp1 = compute_prox(prox_arg, prox_funcs, prox_coeff)
             x_kp1 = _blend_vals(x_k, z_kp1, k / (k + 2), 2.0 / (k + 2))
@@ -669,7 +673,6 @@ def optimize_bilevel_constrained_smo(
     log_every=1,
 ):
     """
-    TODO: Verify correctness
     Algorithm 1 for the constrained bilevel reformulation in the sigma = 0 case.
 
     The solver owns the full SMO outer loop. It warm-starts each lower subproblem
@@ -710,8 +713,8 @@ def optimize_bilevel_constrained_smo(
     num_outer_iters = 0
     epsilon_k = epsilon_0
     while True:
-        rho_k = epsilon_k ** -1 # input
-        mu_k = epsilon_k ** -3 # input
+        rho_k = epsilon_k ** -1
+        mu_k = epsilon_k ** -3
         lambda_norm = float(torch.linalg.vector_norm(lambda_k).item())
 
         def smooth_lower_aug(z_vars):
@@ -738,6 +741,7 @@ def optimize_bilevel_constrained_smo(
         z_params = _clone_vals(z_state, requires_grad=True)
 
         def h_smo():
+            # Eq (8)
             upper_term = upper_smooth(params_x, params_y)
             lower_y = lower_smooth(params_x, params_y)
             lower_z = lower_smooth(params_x, z_params)
@@ -749,6 +753,7 @@ def optimize_bilevel_constrained_smo(
 
         prox_hat = prox_x_funcs + [_scale_prox_spec(p, rho_k) for p in prox_y_funcs]
         prox_z = [_scale_prox_spec(p, rho_k) for p in prox_y_funcs]
+        # Eq (11)
         L_k = (
             L_grad_f1
             + 2.0 * rho_k * L_grad_ftilde1
@@ -866,7 +871,7 @@ def optimize_bilevel_constrained_minimax(
         # Lagrange multipliers are non-negative.
         v = torch.maximum(v, 0.0)
         # Box constrains from Strong Slater condition.
-        v = torch.mininum(v, lagrange_bound)
+        v = torch.minimum(v, lagrange_bound)
         return v
 
     def h_lagrangian():
