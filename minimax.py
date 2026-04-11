@@ -52,46 +52,6 @@ def _add_vals(vals1, vals2):
 def _blend_vals(vals1, vals2, coeff1, coeff2):
     return [coeff1 * v1 + coeff2 * v2 for v1, v2 in zip(vals1, vals2)]
 
-
-# TODO: remove.
-def _normalize_prox_funcs(prox_func, count):
-    if isinstance(prox_func, (list, tuple)):
-        prox_funcs = list(prox_func)
-    else:
-        prox_funcs = _expand_prox_spec(prox_func, count)
-    if len(prox_funcs) != count:
-        raise ValueError(f"Expected {count} proximal operators, got {len(prox_funcs)}")
-    return prox_funcs
-
-
-# TODO: remove.
-def _normalize_tensor_list(values, count, name):
-    if torch.is_tensor(values):
-        values = [values]
-    else:
-        values = list(values)
-    if len(values) != count:
-        raise ValueError(f"{name} must contain exactly {count} tensors")
-    return [v.clone().detach() for v in values]
-
-
-# TODO: remove.
-def _normalize_multiplier(lambda0, reference):
-    if lambda0 is None:
-        return torch.zeros_like(reference)
-    if isinstance(lambda0, (list, tuple)):
-        if len(lambda0) != 1:
-            raise ValueError("lambda0 must be a tensor or a single-tensor sequence")
-        lambda0 = lambda0[0]
-    if not torch.is_tensor(lambda0):
-        raise TypeError("lambda0 must be a torch.Tensor")
-    if lambda0.shape != reference.shape:
-        raise ValueError(
-            f"lambda0 shape {tuple(lambda0.shape)} does not match constraints {tuple(reference.shape)}"
-        )
-    return lambda0.clone().detach()
-
-
 def _compute_value_and_grad(values, func):
     working = _clone_vals(values, requires_grad=True)
     loss = func(working)
@@ -140,7 +100,6 @@ def _solve_alg_a1_convex(
     if not init_vals:
         raise ValueError("init_vals must contain at least one tensor")
 
-    prox_funcs = _normalize_prox_funcs(prox_func, len(init_vals))
     target_iters = _alg_a1_iteration_bound(D_y, L_phi, epsilon)
     num_iters = target_iters if max_iter is None else min(target_iters, max_iter)
 
@@ -154,7 +113,7 @@ def _solve_alg_a1_convex(
             prox_coeff = (k + 2) / (2.0 * L_phi)
             # essentially prox_arg = z_k - prox_coeff * grad_y
             prox_arg = _add_vals(z_k, _scale_vals(grad_y, -prox_coeff))
-            z_kp1 = compute_prox(prox_arg, prox_funcs, prox_coeff)
+            z_kp1 = compute_prox(prox_arg, prox_func, prox_coeff)
             x_kp1 = _blend_vals(x_k, z_kp1, k / (k + 2), 2.0 / (k + 2))
             x_k = x_kp1
             z_k = z_kp1
@@ -173,7 +132,12 @@ def _solve_alg_a1_convex(
 
 
 def compute_prox(vals, prox_funcs, prox_coeff):
-    prox_funcs = _normalize_prox_funcs(prox_funcs, len(vals))
+    if isinstance(prox_funcs, (list, tuple)):
+        prox_funcs = list(prox_funcs)
+    else:
+        prox_funcs = _expand_prox_spec(prox_funcs, len(vals))
+    if len(prox_funcs) != len(vals):
+        raise ValueError(f"Expected {len(vals)} proximal operators, got {len(prox_funcs)}")
     prox_vals = []
     for p, prox in zip(vals, prox_funcs):
         prox_vals.append(prox(p, prox_coeff))
@@ -463,11 +427,7 @@ class Minimax_SCSC(Optimizer):
 def optimize_NCWC(params_x, params_y, h_func, lip_h, D_y, prox_x, prox_y, epsilon, epsilon_0, lr=1, max_iter=1000, verbose=False, log_every=1):
     """
     Algorithm 6 of FOP for non-convex-weakly-concave minimax problems.
-
-    TODO: Verify correctness for SMO
-    Algorithm B.2 of SMO outer wrapper for the
-    sigma_y = 0 case: it repeatedly regularizes the minimax problem and calls
-    the strongly-convex-strongly-concave inner solver above.
+    Algorithm B.2 of SMO outer wrapper for the sigma_y = 0 case: it repeatedly regularizes the minimax problem and calls the strongly-convex-strongly-concave inner solver above.
     """
     if lip_h <= 0:
         raise ValueError(f"Invalid lip_h: {lip_h}")
@@ -701,13 +661,40 @@ def optimize_bilevel_constrained_smo(
     if not params_y:
         raise ValueError("params_y must contain at least one tensor")
 
-    prox_x_funcs = _normalize_prox_funcs(prox_x, len(params_x))
-    prox_y_funcs = _normalize_prox_funcs(prox_y, len(params_y))
-    z_state = _clone_vals(params_y) if z0 is None else _normalize_tensor_list(z0, len(params_y), "z0")
+    prox_x_funcs = list(prox_x) if isinstance(prox_x, (list, tuple)) else _expand_prox_spec(prox_x, len(params_x))
+    prox_y_funcs = list(prox_y) if isinstance(prox_y, (list, tuple)) else _expand_prox_spec(prox_y, len(params_y))
+    if len(prox_x_funcs) != len(params_x):
+        raise ValueError(f"Expected {len(params_x)} proximal operators for x, got {len(prox_x_funcs)}")
+    if len(prox_y_funcs) != len(params_y):
+        raise ValueError(f"Expected {len(params_y)} proximal operators for y, got {len(prox_y_funcs)}")
+
+    if z0 is None:
+        z_state = _clone_vals(params_y)
+    else:
+        if torch.is_tensor(z0):
+            z0 = [z0]
+        else:
+            z0 = list(z0)
+        if len(z0) != len(params_y):
+            raise ValueError(f"z0 must contain exactly {len(params_y)} tensors")
+        z_state = [v.clone().detach() for v in z0]
 
     with torch.no_grad():
         constraint_template = lower_constraints(params_x, z_state)
-    lambda_k = _normalize_multiplier(lambda0, constraint_template)
+    if lambda0 is None:
+        lambda_k = torch.zeros_like(constraint_template)
+    else:
+        if isinstance(lambda0, (list, tuple)):
+            if len(lambda0) != 1:
+                raise ValueError("lambda0 must be a tensor or a single-tensor sequence")
+            lambda0 = lambda0[0]
+        if not torch.is_tensor(lambda0):
+            raise TypeError("lambda0 must be a torch.Tensor")
+        if lambda0.shape != constraint_template.shape:
+            raise ValueError(
+                f"lambda0 shape {tuple(lambda0.shape)} does not match constraints {tuple(constraint_template.shape)}"
+            )
+        lambda_k = lambda0.clone().detach()
 
     history = []
     num_outer_iters = 0
