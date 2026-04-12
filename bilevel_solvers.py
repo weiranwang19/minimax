@@ -68,7 +68,7 @@ def optimize_bilevel_constrained_fop(
     mu = epsilon ** -2
     epsilon_0 = epsilon ** (5 / 2)
 
-    z_params = [p.clone().detach().requires_grad_(True) for p in params_y]
+    z_params = clone_vals(params_y, requires_grad=True)
 
     def h_alg4():
         upper_term = upper_smooth(params_x, params_y)
@@ -114,7 +114,7 @@ def optimize_bilevel_constrained_fop(
     )
 
     return {
-        "z_eps": [p.clone().detach() for p in z_params],
+        "z_eps": clone_vals(z_params),
         "rho": rho,
         "mu": mu,
         "epsilon_0": epsilon_0,
@@ -194,7 +194,7 @@ def optimize_bilevel_constrained_smo(
             z0 = list(z0)
         if len(z0) != len(params_y):
             raise ValueError(f"z0 must contain exactly {len(params_y)} tensors")
-        z_state = [v.clone().detach() for v in z0]
+        z_state = clone_vals(z0)
 
     with torch.no_grad():
         constraint_template = lower_constraints(params_x, z_state)
@@ -371,7 +371,7 @@ def optimize_bilevel_constrained_minimax(
 
     # Apply lower constraint once to get the number of constraints.
     # The copy of y.
-    params_z1 = [p.clone().detach().requires_grad_(True) for p in params_y1]
+    params_z1 = clone_vals(params_y1, requires_grad=True)
     tmp = lower_constraints(params_x, params_y1)
     num_constraints = tmp.shape[0]
     # Create and initialize the Lagrange multipliers.
@@ -434,7 +434,7 @@ def optimize_bilevel_constrained_minimax(
     # TODO: Monitor feasibility of lower level constraint, suboptimality of lower level, obj value.
 
     return {
-        "z_eps": [p.clone().detach() for p in z_params],
+        "z_eps": clone_vals(z_params),
         "rho": rho,
         "epsilon_0": epsilon_0,
         "solver_stats": solver_stats,

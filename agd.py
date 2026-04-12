@@ -1,4 +1,4 @@
-from utils import clone_vals, add_vals, blend_vals
+from utils import clone_vals, add_vals, scale_vals, blend_vals
 
 
 def _compute_value_and_grad(values, func):
@@ -61,7 +61,7 @@ def _solve_alg_a1_convex(
             _, grad_y = _compute_value_and_grad(y_k, phi_func)
             prox_coeff = (k + 2) / (2.0 * L_phi)
             # essentially prox_arg = z_k - prox_coeff * grad_y
-            prox_arg = add_vals(z_k, _scale_vals(grad_y, -prox_coeff))
+            prox_arg = add_vals(z_k, scale_vals(grad_y, -prox_coeff))
             z_kp1 = compute_prox(prox_arg, prox_func, prox_coeff)
             x_kp1 = blend_vals(x_k, z_kp1, k / (k + 2), 2.0 / (k + 2))
             x_k = x_kp1
