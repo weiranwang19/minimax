@@ -270,6 +270,7 @@ class Minimax_SCSC(Optimizer):
         y_k = y_f_k = self.get_y_copy()
 
         num_outer_iters = 0
+        num_inner_iters = 0
         final_delta = None
         terminated = False
 
@@ -400,6 +401,7 @@ class Minimax_SCSC(Optimizer):
             delta = compute_norm(delta_x + delta_y)
             final_delta = float(delta.item())
             num_outer_iters = k + 1
+            num_inner_iters+= t
 
             # if self.verbose and (
             #     k % self.log_every == 0 or final_delta < self.tau or num_outer_iters == self.max_iter
@@ -419,6 +421,7 @@ class Minimax_SCSC(Optimizer):
 
         return {
             "num_outer_iters": num_outer_iters,
+            "num_inner_iters": num_inner_iters,
             "final_delta": final_delta,
             "terminated": terminated,
         }
@@ -500,6 +503,8 @@ def optimize_NCWC(params_x, params_y, h_func, lip_h, D_y, prox_x, prox_y, epsilo
             break
 
         x_k = x_kp1
+
+    # TODO: add metrics here and stop early.
 
     return {
         "num_outer_iters": num_outer_iters,
