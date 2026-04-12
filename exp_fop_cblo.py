@@ -537,6 +537,7 @@ def run_single_instance_smo(instance_idx, problem_size):
     initial_objective = upper_objective(initial_x, initial_y)
     gtilde_hi = compute_gtilde_hi()
     d_y = compute_d_y()
+    stage_diagnostics = []
 
     def stage_callback(payload):
         x_curr = payload["x"][0]
@@ -545,26 +546,53 @@ def run_single_instance_smo(instance_idx, problem_size):
         lower_star = solve_lower_level_value(x_curr)
         y_metrics = _evaluate_lower_candidate(x_curr, y_curr, lower_star)
         z_metrics = _evaluate_lower_candidate(x_curr, z_curr, lower_star)
+        stage_diag = {
+            "stage_index": payload["stage_index"],
+            "epsilon": payload["epsilon_k"],
+            "rho": payload["rho_k"],
+            "mu": payload["mu_k"],
+            "lambda_norm": payload["lambda_norm"],
+            "y_feas": y_metrics["feas"],
+            "y_lower_gap": y_metrics["lower_gap"], # \tilde f(x,y) - \tilde f^*(x)
+            "z_feas": z_metrics["feas"],
+            "z_lower_gap": z_metrics["lower_gap"],
+            "yz_distance": _vector_distance(y_curr, z_curr),
+            "subproblem_num_outer_iters": payload["subproblem_stats"]["num_outer_iters"],
+            "subproblem_final_diff": payload["subproblem_stats"]["final_diff"],
+            "subproblem_terminated": float(payload["subproblem_stats"]["terminated"]),
+        }
+        stage_diagnostics.append(stage_diag)
         metrics = {
-            "smo/stage/index": payload["stage_index"],
-            "smo/stage/epsilon": payload["epsilon_k"],
-            "smo/stage/rho": payload["rho_k"],
-            "smo/stage/mu": payload["mu_k"],
-            "smo/stage/lambda_norm": payload["lambda_norm"],
+            "smo/stage/index": stage_diag["stage_index"],
+            "smo/stage/epsilon": stage_diag["epsilon"],
+            "smo/stage/rho": stage_diag["rho"],
+            "smo/stage/mu": stage_diag["mu"],
+            "smo/stage/lambda_norm": stage_diag["lambda_norm"],
             "smo/warm_start/num_iters": payload["warm_start_iters"],
             "smo/warm_start/target_num_iters": payload["warm_start_target_iters"],
             "smo/warm_start/capped": float(payload["warm_start_capped"]),
-            "smo/subproblem/num_outer_iters": payload["subproblem_stats"]["num_outer_iters"],
-            "smo/subproblem/final_diff": payload["subproblem_stats"]["final_diff"],
-            "smo/subproblem/terminated": float(payload["subproblem_stats"]["terminated"]),
+            "smo/subproblem/num_outer_iters": stage_diag["subproblem_num_outer_iters"],
+            "smo/subproblem/final_diff": stage_diag["subproblem_final_diff"],
+            "smo/subproblem/terminated": stage_diag["subproblem_terminated"],
             "smo/post/upper_obj": upper_objective(x_curr, y_curr),
-            "smo/post/y_feas": y_metrics["feas"],
-            "smo/post/y_lower_gap": y_metrics["lower_gap"],
-            "smo/post/z_feas": z_metrics["feas"],
-            "smo/post/z_lower_gap": z_metrics["lower_gap"],
-            "smo/post/yz_distance": _vector_distance(y_curr, z_curr),
+            "smo/post/y_feas": stage_diag["y_feas"],
+            "smo/post/y_lower_gap": stage_diag["y_lower_gap"],
+            "smo/post/z_feas": stage_diag["z_feas"],
+            "smo/post/z_lower_gap": stage_diag["z_lower_gap"],
+            "smo/post/yz_distance": stage_diag["yz_distance"],
         }
         log_stage(run, metrics, step=payload["stage_index"])
+        if VERBOSE:
+            print(
+                f"    SMO stage={stage_diag['stage_index']} eps={stage_diag['epsilon']:.3e} "
+                f"y_feas={stage_diag['y_feas']:.3e} y_gap={stage_diag['y_lower_gap']:.3e} "
+                f"z_feas={stage_diag['z_feas']:.3e} z_gap={stage_diag['z_lower_gap']:.3e} "
+                f"yz_dist={stage_diag['yz_distance']:.3e} "
+                f"sub_outer={stage_diag['subproblem_num_outer_iters']} "
+                f"sub_diff={stage_diag['subproblem_final_diff']:.3e} "
+                f"sub_done={int(stage_diag['subproblem_terminated'])}",
+                flush=True,
+            )
 
     try:
         x_tensor = initial_x.clone().requires_grad_(True)
@@ -655,6 +683,7 @@ def run_single_instance_smo(instance_idx, problem_size):
             "final_feas": feas,
             "final_lower_gap": lower_gap,
             "smo_diagnostics": diagnostics,
+            "stage_diagnostics": stage_diagnostics,
         }
         finish_instance_run(
             run,

@@ -401,12 +401,12 @@ class Minimax_SCSC(Optimizer):
             final_delta = float(delta.item())
             num_outer_iters = k + 1
 
-            if self.verbose and (
-                k % self.log_every == 0 or final_delta < self.tau or num_outer_iters == self.max_iter
-            ):
-                self._log(
-                    f"Minimax_SCSC outer={k} inner_t={t} delta={final_delta:.3e} tau={self.tau:.3e}"
-                )
+            # if self.verbose and (
+            #     k % self.log_every == 0 or final_delta < self.tau or num_outer_iters == self.max_iter
+            # ):
+            #     self._log(
+            #         f"Minimax_SCSC outer={k} inner_t={t} delta={final_delta:.3e} tau={self.tau:.3e}"
+            #     )
 
             if delta < self.tau:
                 terminated = True
