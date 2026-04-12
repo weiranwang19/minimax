@@ -750,7 +750,7 @@ def optimize_bilevel_constrained_smo(
             + 2.0 * mu_k * (L_gtilde ** 2 + gtilde_hi * L_grad_gtilde)
             + 2.0 * lambda_norm * L_grad_gtilde
         )
-        epsilon_0 = epsilon_k / (2.0 * math.sqrt(mu_k))
+        subproblem_epsilon_0 = epsilon_k / (2.0 * math.sqrt(mu_k))
 
         subproblem_stats = optimize_NCWC(
             params_x + params_y,
@@ -761,7 +761,7 @@ def optimize_bilevel_constrained_smo(
             prox_hat,
             prox_z,
             epsilon_k,
-            epsilon_0,
+            subproblem_epsilon_0,
             max_iter=subproblem_max_iter,
             verbose=verbose,
             log_every=log_every,
@@ -773,7 +773,6 @@ def optimize_bilevel_constrained_smo(
         next_lambda_norm = float(torch.linalg.vector_norm(lambda_next).item())
 
         stage_summary = {
-            "outer_iter": num_outer_iters,
             "stage_index": num_outer_iters,
             "epsilon_k": epsilon_k,
             "rho_k": rho_k,

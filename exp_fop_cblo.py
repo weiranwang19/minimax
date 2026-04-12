@@ -15,22 +15,22 @@ torch.set_default_dtype(torch.float64)
 
 # Section 4.2 / Table 2 experiment controls. `PROBLEM_SIZES` is the actual grid of (n, m, l) values; the rest are algorithmic parameters that can be tuned for better performance.
 # PROBLEM_SIZES = [(100 * k, 100 * k, 5 * k) for k in range(1, 11)]
-PROBLEM_SIZES = [(400, 400, 20)]
+PROBLEM_SIZES = [(200, 200, 10)]
 NUM_INSTANCES = 10
 SOLVER_METHOD = "smo"
 BASE_RHO = 5.0
-FINAL_EPS = 0.04
+FINAL_EPS = 1e-2
 SMO_EPS = 1e-2
-SMO_ETA0 = 1.0
+SMO_EPSILON_0 = 1.0
 SMO_TAU = 0.8
 FEAS_TOL = 1e-2
 LOWER_GAP_TOL = 1e-2
 SEED = 0
-VERBOSE = False
+VERBOSE = True
 MAX_OUTER_ITERS = 16
 MAX_APG_ITERS = 100
 ALG4_MAX_ITERS = 20
-SMO_SUBPROBLEM_MAX_ITERS = 20
+SMO_SUBPROBLEM_MAX_ITERS = 200
 SOLVER_LOG_EVERY = 1
 APG_LOG_EVERY = 250
 APG_PG_TOL_FACTOR = 0.1
@@ -95,7 +95,7 @@ def init_instance_run(problem_size, instance_idx):
         "max_apg_iters": MAX_APG_ITERS,
         "alg4_max_iters": ALG4_MAX_ITERS,
         "smo_eps": SMO_EPS,
-        "smo_eta0": SMO_ETA0,
+        "smo_epsilon_0": SMO_EPSILON_0,
         "smo_tau": SMO_TAU,
         "smo_subproblem_max_iters": SMO_SUBPROBLEM_MAX_ITERS,
     }
@@ -174,13 +174,11 @@ def feasibility_norm(x_vec, z_vec):
     return float(torch.linalg.vector_norm(residual).item())
 
 
-# Move these inside.
 def lower_penalty_objective(x_vec, z_vec):
     """Penalized lower problem used to compute the APG warm start y_tilde."""
     residual = positive_part(constraint_residual(x_vec, z_vec))
     return torch.dot(D_TILDE, z_vec) + CURRENT_MU * torch.sum(torch.square(residual))
 
-# Move inside fop.
 def lower_penalty_gradient(x_vec, z_vec):
     residual = positive_part(constraint_residual(x_vec, z_vec))
     return D_TILDE + 2.0 * CURRENT_MU * (B_MAT.T @ residual)
@@ -239,13 +237,6 @@ def generate_instance(problem_size):
 
     CURRENT_L_G = compute_joint_constraint_lipschitz()
     CURRENT_B_NORM = compute_b_matrix_norm()
-
-
-def projected_gradient_mapping_norm(x_vec, z_vec, step_lip):
-    grad = lower_penalty_gradient(x_vec, z_vec)
-    prox_point = project_box(z_vec - grad / step_lip)
-    pg_norm = step_lip * torch.linalg.vector_norm(z_vec - prox_point)
-    return float(pg_norm.item()), prox_point
 
 
 def apg_warm_start(x_vec, z_init):
@@ -307,7 +298,6 @@ def apg_warm_start(x_vec, z_init):
         curr_obj = next_obj
         last_pg_norm = pg_norm
 
-    # TODO: monitor that this function finds initial y quickly to high accuracy. Pay attention to the results below.
     print(
         f"    APG warning: reached MAX_APG_ITERS={MAX_APG_ITERS} at epsilon={CURRENT_EPS:.3e}; using best iterate",
         flush=True,
@@ -320,7 +310,6 @@ def apg_warm_start(x_vec, z_init):
     }
 
 
-# TODO: replace with CVX if lower level problem is not linear programming.
 def solve_lower_level_value(x_vec):
     """Exact lower-level optimal value f_tilde^*(x) via LP for the stop check."""
     result = linprog(
@@ -333,6 +322,59 @@ def solve_lower_level_value(x_vec):
     if not result.success:
         raise RuntimeError(f"Lower-level LP solve failed: {result.message}")
     return float(result.fun)
+
+
+def _vector_distance(u_vec, v_vec):
+    return float(torch.linalg.vector_norm(u_vec - v_vec).item())
+
+
+def _evaluate_lower_candidate(x_vec, candidate_vec, lower_star=None):
+    lower_obj = lower_objective(x_vec, candidate_vec)
+    if lower_star is None:
+        lower_star = solve_lower_level_value(x_vec)
+    return {
+        "lower_obj": lower_obj,
+        "lower_gap": lower_obj - lower_star,
+        "feas": feasibility_norm(x_vec, candidate_vec),
+    }
+
+
+def build_smo_diagnostics(x_vec, y_vec, z_vec, solver_result):
+    lower_star = solve_lower_level_value(x_vec)
+    y_metrics = _evaluate_lower_candidate(x_vec, y_vec, lower_star)
+    z_metrics = _evaluate_lower_candidate(x_vec, z_vec, lower_star)
+    diagnostics = {
+        "y_feas": y_metrics["feas"],
+        "y_lower_obj": y_metrics["lower_obj"],
+        "y_lower_gap": y_metrics["lower_gap"],
+        "z_feas": z_metrics["feas"],
+        "z_lower_obj": z_metrics["lower_obj"],
+        "z_lower_gap": z_metrics["lower_gap"],
+        "yz_distance": _vector_distance(y_vec, z_vec),
+    }
+
+    history = solver_result.get("history", [])
+    if history:
+        last_stage = history[-1]
+        subproblem_stats = last_stage["subproblem_stats"]
+        diagnostics.update(
+            {
+                "last_stage_index": last_stage["stage_index"],
+                "last_stage_epsilon": last_stage["epsilon_k"],
+                "last_stage_rho": last_stage["rho_k"],
+                "last_stage_mu": last_stage["mu_k"],
+                "last_stage_lambda_norm": last_stage["lambda_norm"],
+                "last_stage_next_lambda_norm": last_stage["next_lambda_norm"],
+                "last_warm_start_iters": last_stage["warm_start_iters"],
+                "last_warm_start_target_iters": last_stage["warm_start_target_iters"],
+                "last_warm_start_capped": float(last_stage["warm_start_capped"]),
+                "last_subproblem_num_outer_iters": subproblem_stats["num_outer_iters"],
+                "last_subproblem_final_diff": subproblem_stats["final_diff"],
+                "last_subproblem_terminated": float(subproblem_stats["terminated"]),
+            }
+        )
+
+    return diagnostics
 
 
 def run_single_instance_fop(instance_idx, problem_size):
@@ -499,11 +541,15 @@ def run_single_instance_smo(instance_idx, problem_size):
     def stage_callback(payload):
         x_curr = payload["x"][0]
         y_curr = payload["y"][0]
+        z_curr = payload["z"][0]
+        lower_star = solve_lower_level_value(x_curr)
+        y_metrics = _evaluate_lower_candidate(x_curr, y_curr, lower_star)
+        z_metrics = _evaluate_lower_candidate(x_curr, z_curr, lower_star)
         metrics = {
             "smo/stage/index": payload["stage_index"],
             "smo/stage/epsilon": payload["epsilon_k"],
             "smo/stage/rho": payload["rho_k"],
-            "smo/stage/pi": payload["mu_k"],
+            "smo/stage/mu": payload["mu_k"],
             "smo/stage/lambda_norm": payload["lambda_norm"],
             "smo/warm_start/num_iters": payload["warm_start_iters"],
             "smo/warm_start/target_num_iters": payload["warm_start_target_iters"],
@@ -512,8 +558,11 @@ def run_single_instance_smo(instance_idx, problem_size):
             "smo/subproblem/final_diff": payload["subproblem_stats"]["final_diff"],
             "smo/subproblem/terminated": float(payload["subproblem_stats"]["terminated"]),
             "smo/post/upper_obj": upper_objective(x_curr, y_curr),
-            "smo/post/feas": feasibility_norm(x_curr, y_curr),
-            "smo/post/lower_gap": lower_objective(x_curr, y_curr) - solve_lower_level_value(x_curr),
+            "smo/post/y_feas": y_metrics["feas"],
+            "smo/post/y_lower_gap": y_metrics["lower_gap"],
+            "smo/post/z_feas": z_metrics["feas"],
+            "smo/post/z_lower_gap": z_metrics["lower_gap"],
+            "smo/post/yz_distance": _vector_distance(y_curr, z_curr),
         }
         log_stage(run, metrics, step=payload["stage_index"])
 
@@ -536,7 +585,7 @@ def run_single_instance_smo(instance_idx, problem_size):
             gtilde_hi=gtilde_hi,
             epsilon=SMO_EPS,
             tau=SMO_TAU,
-            epsilon_0=SMO_ETA0,
+            epsilon_0=SMO_EPSILON_0,
             subproblem_max_iter=SMO_SUBPROBLEM_MAX_ITERS,
             stage_callback=stage_callback,
             verbose=VERBOSE,
@@ -545,41 +594,58 @@ def run_single_instance_smo(instance_idx, problem_size):
 
         x_final = x_tensor.detach().clone()
         y_final = y_tensor.detach().clone()
+        z_final = solver_result["z_eps"][0]
         if torch.any(torch.abs(x_final) > 1.0 + 1e-10):
             raise RuntimeError("SMO iterate x left the box constraints")
         if torch.any(torch.abs(y_final) > 1.0 + 1e-10):
             raise RuntimeError("SMO iterate y left the box constraints")
+        if torch.any(torch.abs(z_final) > 1.0 + 1e-10):
+            raise RuntimeError("SMO auxiliary iterate z left the box constraints")
 
-        feas = feasibility_norm(x_final, y_final)
-        lower_star = solve_lower_level_value(x_final)
-        lower_gap = lower_objective(x_final, y_final) - lower_star
+        diagnostics = build_smo_diagnostics(x_final, y_final, z_final, solver_result)
+        feas = diagnostics["y_feas"]
+        lower_gap = diagnostics["y_lower_gap"]
         current_upper = upper_objective(x_final, y_final)
 
         if VERBOSE:
             print(
                 f"  Instance {instance_idx + 1}: smo_outer={solver_result['num_outer_iters']} "
-                f"feas={feas:.3e} gap={lower_gap:.3e} upper={current_upper:.3e}",
+                f"y_feas={feas:.3e} y_gap={lower_gap:.3e} "
+                f"z_feas={diagnostics['z_feas']:.3e} z_gap={diagnostics['z_lower_gap']:.3e} "
+                f"yz_dist={diagnostics['yz_distance']:.3e} upper={current_upper:.3e}",
                 flush=True,
             )
 
         elapsed = time.perf_counter() - start_time
         if feas > FEAS_TOL or lower_gap > LOWER_GAP_TOL:
+            failure_summary = {
+                "instance/failed": 1.0,
+                "instance/initial_objective": initial_objective,
+                "instance/final_objective": current_upper,
+                "instance/num_outer_iters": solver_result["num_outer_iters"],
+                "instance/final_feas": feas,
+                "instance/final_lower_gap": lower_gap,
+                "instance/elapsed_sec": elapsed,
+                "instance/final_z_feas": diagnostics["z_feas"],
+                "instance/final_z_lower_gap": diagnostics["z_lower_gap"],
+                "instance/final_yz_distance": diagnostics["yz_distance"],
+                "instance/last_subproblem_num_outer_iters": diagnostics.get("last_subproblem_num_outer_iters"),
+                "instance/last_subproblem_final_diff": diagnostics.get("last_subproblem_final_diff"),
+                "instance/last_subproblem_terminated": diagnostics.get("last_subproblem_terminated"),
+            }
             finish_instance_run(
                 run,
-                {
-                    "instance/failed": 1.0,
-                    "instance/initial_objective": initial_objective,
-                    "instance/final_objective": current_upper,
-                    "instance/num_outer_iters": solver_result["num_outer_iters"],
-                    "instance/final_feas": feas,
-                    "instance/final_lower_gap": lower_gap,
-                    "instance/elapsed_sec": elapsed,
-                },
+                failure_summary,
             )
             run_finished = True
             raise RuntimeError(
                 f"Instance {instance_idx + 1} SMO solve failed the stop check: "
-                f"feas={feas:.3e}, gap={lower_gap:.3e}"
+                f"y_feas={feas:.3e}, y_gap={lower_gap:.3e}, "
+                f"z_feas={diagnostics['z_feas']:.3e}, z_gap={diagnostics['z_lower_gap']:.3e}, "
+                f"yz_dist={diagnostics['yz_distance']:.3e}, "
+                f"last_subproblem_terminated={int(diagnostics.get('last_subproblem_terminated', 0.0))}, "
+                f"last_subproblem_outer={diagnostics.get('last_subproblem_num_outer_iters')}, "
+                f"last_subproblem_diff={diagnostics.get('last_subproblem_final_diff')}"
             )
 
         result = {
@@ -588,6 +654,7 @@ def run_single_instance_smo(instance_idx, problem_size):
             "num_outer_iters": solver_result["num_outer_iters"],
             "final_feas": feas,
             "final_lower_gap": lower_gap,
+            "smo_diagnostics": diagnostics,
         }
         finish_instance_run(
             run,
@@ -598,6 +665,12 @@ def run_single_instance_smo(instance_idx, problem_size):
                 "instance/final_feas": result["final_feas"],
                 "instance/final_lower_gap": result["final_lower_gap"],
                 "instance/elapsed_sec": elapsed,
+                "instance/final_z_feas": diagnostics["z_feas"],
+                "instance/final_z_lower_gap": diagnostics["z_lower_gap"],
+                "instance/final_yz_distance": diagnostics["yz_distance"],
+                "instance/last_subproblem_num_outer_iters": diagnostics.get("last_subproblem_num_outer_iters"),
+                "instance/last_subproblem_final_diff": diagnostics.get("last_subproblem_final_diff"),
+                "instance/last_subproblem_terminated": diagnostics.get("last_subproblem_terminated"),
             },
         )
         run_finished = True
