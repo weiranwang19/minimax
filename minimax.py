@@ -406,6 +406,9 @@ def optimize_NCWC(
                     "scsc_num_inner_iters": solver_stats["num_inner_iters"],
                     "call_cumulative_scsc_inner_iters": num_inner_iters,
                     "objective": _evaluate_objective(objective_func, params_x, params_y),
+                    # TODO: We want lower-gap and lower feasibility.
+                    # We probably want to pass in a dictionary of functions {'upper_obj': func1, 'lower_gap': func2, 'lower_feas:' func3} and get corresponding metrics.
+                    # "upper_obj": func1(x,y)
                 }
             )
 

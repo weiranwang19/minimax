@@ -534,7 +534,7 @@ def run_single_instance_fop(instance_idx, problem_size):
 
     try:
         for k in tqdm.trange(MAX_OUTER_ITERS, desc=f"Instance {instance_idx + 1}/{NUM_INSTANCES}", unit="outer iter"):
-            rho_k = BASE_RHO ** (k + 1)   # Weiran: paper says k-1 instead of k+1.
+            rho_k = BASE_RHO ** (k - 1)
             mu_k = rho_k ** 2
             epsilon_k = 1.0 / rho_k
 
