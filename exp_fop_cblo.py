@@ -17,8 +17,8 @@ torch.set_default_dtype(torch.float64)
 
 # Section 4.2 / Table 2 experiment controls. `PROBLEM_SIZES` is the actual grid of (n, m, l) values; the rest are algorithmic parameters that can be tuned for better performance.
 # PROBLEM_SIZES = [(100 * k, 100 * k, 5 * k) for k in range(1, 11)]
-PROBLEM_SIZES = [(200, 200, 10)]
-NUM_INSTANCES = 10
+PROBLEM_SIZES = [(400, 400, 20)]
+NUM_INSTANCES = 1
 SOLVER_METHOD = "smo"
 BASE_RHO = 5.0
 FINAL_EPS = 1e-2
@@ -42,6 +42,45 @@ WANDB_PROJECT = "minimax"
 WANDB_ENTITY = None
 WANDB_MODE = "online"
 WANDB_TAGS = ()
+NCWC_HISTORY_METRICS = (
+    "ncwc/upper_obj",
+    "ncwc/call_index",
+    "ncwc/completed_outer_iters",
+    "ncwc/scsc_inner_iters",
+    "ncwc/final_diff",
+    "ncwc/inner_terminated",
+)
+FOP_STAGE_METRICS = (
+    "fop/stage/rho",
+    "fop/stage/mu",
+    "fop/stage/epsilon",
+    "fop/subproblem/num_outer_iters",
+    "fop/subproblem/num_inner_iters",
+    "fop/subproblem/final_diff",
+    "fop/subproblem/terminated",
+    "fop/post/upper_obj",
+    "fop/post/feas",
+    "fop/post/lower_gap",
+)
+SMO_STAGE_METRICS = (
+    "smo/stage/epsilon",
+    "smo/stage/rho",
+    "smo/stage/mu",
+    "smo/stage/lambda_norm",
+    "smo/warm_start/num_iters",
+    "smo/warm_start/target_num_iters",
+    "smo/warm_start/capped",
+    "smo/subproblem/num_outer_iters",
+    "smo/subproblem/num_inner_iters",
+    "smo/subproblem/final_diff",
+    "smo/subproblem/terminated",
+    "smo/post/upper_obj",
+    "smo/post/y_feas",
+    "smo/post/y_lower_gap",
+    "smo/post/z_feas",
+    "smo/post/z_lower_gap",
+    "smo/post/yz_distance",
+)
 
 # Global state placeholders for the current problem instance and iteration
 N = None
@@ -78,6 +117,25 @@ def _resolve_wandb():
     return wandb
 
 
+def _compact_metrics(metrics):
+    return {key: value for key, value in metrics.items() if value is not None}
+
+
+def _configure_run_metrics(run):
+    if not hasattr(run, "define_metric"):
+        return
+    step_metric = "ncwc/cumulative_scsc_inner_iters"
+    run.define_metric(step_metric)
+    for metric_name in NCWC_HISTORY_METRICS:
+        run.define_metric(metric_name, step_metric=step_metric)
+    run.define_metric("fop/stage/index")
+    for metric_name in FOP_STAGE_METRICS:
+        run.define_metric(metric_name, step_metric="fop/stage/index")
+    run.define_metric("smo/stage/index")
+    for metric_name in SMO_STAGE_METRICS:
+        run.define_metric(metric_name, step_metric="smo/stage/index")
+
+
 def init_instance_run(problem_size, instance_idx):
     wandb = _resolve_wandb()
     if wandb is None:
@@ -101,7 +159,7 @@ def init_instance_run(problem_size, instance_idx):
         "smo_tau": SMO_TAU,
         "smo_subproblem_max_iters": SMO_SUBPROBLEM_MAX_ITERS,
     }
-    return wandb.init(
+    run = wandb.init(
         project=WANDB_PROJECT,
         entity=WANDB_ENTITY,
         mode=WANDB_MODE,
@@ -111,12 +169,57 @@ def init_instance_run(problem_size, instance_idx):
         config=config,
         reinit=True,
     )
+    _configure_run_metrics(run)
+    return run
+
+
+def log_history(run, metrics):
+    if run is None:
+        return
+    run.log(_compact_metrics(metrics))
 
 
 def log_stage(run, metrics, step):
     if run is None:
         return
-    run.log(metrics, step=step)
+    del step
+    run.log(_compact_metrics(metrics))
+
+
+def build_ncwc_progress_logger(run, ncwc_state):
+    def callback(payload):
+        is_new_call = (
+            payload["completed_outer_iters"] == 0
+            and payload["call_cumulative_scsc_inner_iters"] == 0
+        )
+        if is_new_call:
+            ncwc_state["ncwc_call_index"] += 1
+            ncwc_state["current_call_index"] = ncwc_state["ncwc_call_index"]
+            ncwc_state["current_call_base_scsc_inner_iters"] = ncwc_state["base_scsc_inner_iters"]
+
+        call_index = ncwc_state["current_call_index"]
+        base_scsc_inner_iters = ncwc_state["current_call_base_scsc_inner_iters"]
+        cumulative_scsc_inner_iters = (
+            base_scsc_inner_iters + payload["call_cumulative_scsc_inner_iters"]
+        )
+        log_history(
+            run,
+            {
+                "ncwc/cumulative_scsc_inner_iters": cumulative_scsc_inner_iters,
+                "ncwc/upper_obj": payload["objective"],
+                "ncwc/call_index": call_index,
+                "ncwc/completed_outer_iters": payload["completed_outer_iters"],
+                "ncwc/scsc_inner_iters": payload["scsc_num_inner_iters"],
+                "ncwc/final_diff": payload["final_diff"],
+                "ncwc/inner_terminated": float(payload["inner_terminated"]),
+            },
+        )
+        ncwc_state["base_scsc_inner_iters"] = max(
+            ncwc_state["base_scsc_inner_iters"],
+            cumulative_scsc_inner_iters,
+        )
+
+    return callback
 
 
 def finish_instance_run(run, summary):
@@ -205,15 +308,28 @@ def compute_d_y():
     return 2.0 * math.sqrt(M)
 
 
-def sample_interior_box_point(dim):
+def _instance_seed(problem_size, instance_idx):
+    seed = int(SEED) % (2 ** 63 - 1)
+    for value in (*problem_size, instance_idx):
+        seed = (seed * 1000003 + int(value) + 0x9E3779B97F4A7C15) % (2 ** 63 - 1)
+    return seed
+
+
+def _make_instance_generator(problem_size, instance_idx):
+    generator = torch.Generator()
+    generator.manual_seed(_instance_seed(problem_size, instance_idx))
+    return generator
+
+
+def sample_interior_box_point(dim, generator=None):
     """Sample y_hat strictly inside the box so the lower KKT construction is simple."""
     while True:
-        candidate = project_box(0.1 * torch.randn(dim))
+        candidate = project_box(0.1 * torch.randn(dim, generator=generator))
         if torch.all(torch.abs(candidate) < 1.0):
             return candidate
 
 
-def generate_instance(problem_size):
+def generate_instance(problem_size, instance_idx):
     """
     Generate one random constrained bilevel linear instance from Section 4.2.
 
@@ -223,17 +339,18 @@ def generate_instance(problem_size):
     global N, M, L
     global C, D, D_TILDE, A_MAT, B_MAT, B_VEC, Y_HAT
     global CURRENT_L_G, CURRENT_B_NORM
-    
+
     # Page 12 top
     N, M, L = problem_size
-    C = torch.randn(N)
-    D = torch.randn(M)
-    A_MAT = 0.01 * torch.randn(L, N)
-    B_MAT = 0.01 * torch.randn(L, M)
-    Y_HAT = sample_interior_box_point(M)
+    generator = _make_instance_generator(problem_size, instance_idx)
+    C = torch.randn(N, generator=generator)
+    D = torch.randn(M, generator=generator)
+    A_MAT = 0.01 * torch.randn(L, N, generator=generator)
+    B_MAT = 0.01 * torch.randn(L, M, generator=generator)
+    Y_HAT = sample_interior_box_point(M, generator=generator)
 
     # Pick nonnegative multipliers and back out (b, d_tilde) so Y_HAT solves the lower problem at x = 0.
-    lam = torch.abs(torch.randn(L))
+    lam = torch.abs(torch.randn(L, generator=generator))
     B_VEC = B_MAT @ Y_HAT
     D_TILDE = -B_MAT.T @ lam
 
@@ -371,6 +488,7 @@ def build_smo_diagnostics(x_vec, y_vec, z_vec, solver_result):
                 "last_warm_start_target_iters": last_stage["warm_start_target_iters"],
                 "last_warm_start_capped": float(last_stage["warm_start_capped"]),
                 "last_subproblem_num_outer_iters": subproblem_stats["num_outer_iters"],
+                "last_subproblem_num_inner_iters": subproblem_stats["num_inner_iters"],
                 "last_subproblem_final_diff": subproblem_stats["final_diff"],
                 "last_subproblem_terminated": float(subproblem_stats["terminated"]),
             }
@@ -397,8 +515,14 @@ def run_single_instance_fop(instance_idx, problem_size):
     y_prev = Y_HAT.clone()
     y_tilde_prev = Y_HAT.clone()
     initial_objective = upper_objective(x_prev, y_prev)
+    log_history(run, {"instance/initial_objective": initial_objective})
     gtilde_hi = compute_gtilde_hi()
     d_y = compute_d_y()
+    ncwc_state = {
+        "base_scsc_inner_iters": 0,
+        "ncwc_call_index": 0,
+    }
+    ncwc_progress_callback = build_ncwc_progress_logger(run, ncwc_state)
 
     prox_x = prox_box
     prox_y = prox_box
@@ -422,7 +546,7 @@ def run_single_instance_fop(instance_idx, problem_size):
                 )
 
             def smooth_lower_penalty(z_vars):
-                constraint_z = lower_constraints(x_prev, z_vars)
+                constraint_z = lower_constraints([x_prev], z_vars)
                 penalty = positive_part_norm_sq(constraint_z) * mu_k
                 return lower_smooth(x_prev, z_vars) + penalty
 
@@ -433,14 +557,14 @@ def run_single_instance_fop(instance_idx, problem_size):
             )
 
             y_init, apg_stats = agd_convex(
-                clone_vals(y_prev),
+                clone_vals([y_prev]),
                 smooth_lower_penalty,
-                prox_y,
+                [prox_y],
                 L_hat_k,
                 epsilon_k,
                 d_y,
             )
-            assign_vals(y_tilde_prev, y_init)
+            y_tilde_prev = y_init[0].detach().clone()
 
             # y_tilde_prev, apg_stats = apg_warm_start(x_prev, y_tilde_prev)
 
@@ -465,6 +589,8 @@ def run_single_instance_fop(instance_idx, problem_size):
                 max_iter=ALG4_MAX_ITERS,
                 verbose=VERBOSE,
                 log_every=SOLVER_LOG_EVERY,
+                objective_func=upper_smooth,
+                progress_callback=ncwc_progress_callback,
             )
 
             x_prev = x_tensor.detach().clone()
@@ -491,6 +617,7 @@ def run_single_instance_fop(instance_idx, problem_size):
                     # "fop/apg/best_obj": apg_stats["best_obj"],
                     # "fop/apg/pg_norm": apg_stats["pg_norm"],
                     "fop/subproblem/num_outer_iters": solver_result["solver_stats"]["num_outer_iters"],
+                    "fop/subproblem/num_inner_iters": solver_result["solver_stats"]["num_inner_iters"],
                     "fop/subproblem/final_diff": solver_result["solver_stats"]["final_diff"],
                     "fop/subproblem/terminated": float(solver_result["solver_stats"]["terminated"]),
                     "fop/post/upper_obj": current_upper,
@@ -565,9 +692,15 @@ def run_single_instance_smo(instance_idx, problem_size):
     initial_x = torch.zeros(N)
     initial_y = Y_HAT.clone()
     initial_objective = upper_objective(initial_x, initial_y)
+    log_history(run, {"instance/initial_objective": initial_objective})
     gtilde_hi = compute_gtilde_hi()
     d_y = compute_d_y()
     stage_diagnostics = []
+    ncwc_state = {
+        "base_scsc_inner_iters": 0,
+        "ncwc_call_index": 0,
+    }
+    ncwc_progress_callback = build_ncwc_progress_logger(run, ncwc_state)
 
     def stage_callback(payload):
         x_curr = payload["x"][0]
@@ -588,6 +721,7 @@ def run_single_instance_smo(instance_idx, problem_size):
             "z_lower_gap": z_metrics["lower_gap"],
             "yz_distance": _vector_distance(y_curr, z_curr),
             "subproblem_num_outer_iters": payload["subproblem_stats"]["num_outer_iters"],
+            "subproblem_num_inner_iters": payload["subproblem_stats"]["num_inner_iters"],
             "subproblem_final_diff": payload["subproblem_stats"]["final_diff"],
             "subproblem_terminated": float(payload["subproblem_stats"]["terminated"]),
         }
@@ -602,6 +736,7 @@ def run_single_instance_smo(instance_idx, problem_size):
             "smo/warm_start/target_num_iters": payload["warm_start_target_iters"],
             "smo/warm_start/capped": float(payload["warm_start_capped"]),
             "smo/subproblem/num_outer_iters": stage_diag["subproblem_num_outer_iters"],
+            "smo/subproblem/num_inner_iters": stage_diag["subproblem_num_inner_iters"],
             "smo/subproblem/final_diff": stage_diag["subproblem_final_diff"],
             "smo/subproblem/terminated": stage_diag["subproblem_terminated"],
             "smo/post/upper_obj": upper_objective(x_curr, y_curr),
@@ -648,6 +783,8 @@ def run_single_instance_smo(instance_idx, problem_size):
             stage_callback=stage_callback,
             verbose=VERBOSE,
             log_every=SOLVER_LOG_EVERY,
+            objective_func=upper_smooth,
+            progress_callback=ncwc_progress_callback,
         )
 
         x_final = x_tensor.detach().clone()
@@ -688,6 +825,7 @@ def run_single_instance_smo(instance_idx, problem_size):
                 "instance/final_z_lower_gap": diagnostics["z_lower_gap"],
                 "instance/final_yz_distance": diagnostics["yz_distance"],
                 "instance/last_subproblem_num_outer_iters": diagnostics.get("last_subproblem_num_outer_iters"),
+                "instance/last_subproblem_num_inner_iters": diagnostics.get("last_subproblem_num_inner_iters"),
                 "instance/last_subproblem_final_diff": diagnostics.get("last_subproblem_final_diff"),
                 "instance/last_subproblem_terminated": diagnostics.get("last_subproblem_terminated"),
             }
@@ -728,6 +866,7 @@ def run_single_instance_smo(instance_idx, problem_size):
                 "instance/final_z_lower_gap": diagnostics["z_lower_gap"],
                 "instance/final_yz_distance": diagnostics["yz_distance"],
                 "instance/last_subproblem_num_outer_iters": diagnostics.get("last_subproblem_num_outer_iters"),
+                "instance/last_subproblem_num_inner_iters": diagnostics.get("last_subproblem_num_inner_iters"),
                 "instance/last_subproblem_final_diff": diagnostics.get("last_subproblem_final_diff"),
                 "instance/last_subproblem_terminated": diagnostics.get("last_subproblem_terminated"),
             },
@@ -764,7 +903,7 @@ def run_problem_size(problem_size):
     final_values = []
 
     for instance_idx in range(NUM_INSTANCES):
-        generate_instance(problem_size)
+        generate_instance(problem_size, instance_idx)
         start_time = time.perf_counter()
         result = run_single_instance(instance_idx, problem_size)
         elapsed = time.perf_counter() - start_time

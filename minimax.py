@@ -280,7 +280,33 @@ class Minimax_SCSC(Optimizer):
         }
 
 
-def optimize_NCWC(params_x, params_y, h_func, lip_h, D_y, prox_x, prox_y, epsilon, epsilon_0, lr=1, max_iter=1000, verbose=False, log_every=1):
+def _evaluate_objective(objective_func, params_x, params_y):
+    if objective_func is None:
+        return None
+    with torch.no_grad():
+        value = objective_func(params_x, params_y)
+    if torch.is_tensor(value):
+        return float(value.item())
+    return float(value)
+
+
+def optimize_NCWC(
+    params_x,
+    params_y,
+    h_func,
+    lip_h,
+    D_y,
+    prox_x,
+    prox_y,
+    epsilon,
+    epsilon_0,
+    lr=1,
+    max_iter=1000,
+    verbose=False,
+    log_every=1,
+    objective_func=None,
+    progress_callback=None,
+):
     """
     Algorithm 6 of FOP for non-convex-weakly-concave minimax problems.
     Algorithm B.2 of SMO outer wrapper for the sigma_y = 0 case: it repeatedly regularizes the minimax problem and calls the strongly-convex-strongly-concave inner solver above.
@@ -297,13 +323,36 @@ def optimize_NCWC(params_x, params_y, h_func, lip_h, D_y, prox_x, prox_y, epsilo
         raise ValueError(f"Invalid max_iter: {max_iter}")
     if log_every <= 0:
         raise ValueError(f"Invalid log_every: {log_every}")
+    if objective_func is not None and not callable(objective_func):
+        raise TypeError("objective_func must be callable")
+    if progress_callback is not None and not callable(progress_callback):
+        raise TypeError("progress_callback must be callable")
 
+    params_x = list(params_x)
+    params_y = list(params_y)
     x_k = [p.clone().detach() for p in params_x]
     y_0 = [p.clone().detach() for p in params_y]
 
     num_outer_iters = 0
+    num_inner_iters = 0
     final_diff = None
     terminated = False
+
+    if progress_callback is not None:
+        progress_callback(
+            {
+                "completed_outer_iters": 0,
+                "epsilon_k": None,
+                "final_diff": None,
+                "terminated": False,
+                "inner_terminated": False,
+                "ncwc_terminated": False,
+                "scsc_num_outer_iters": 0,
+                "scsc_num_inner_iters": 0,
+                "call_cumulative_scsc_inner_iters": 0,
+                "objective": _evaluate_objective(objective_func, params_x, params_y),
+            }
+        )
 
     for k in tqdm.trange(max_iter, desc="optimize_NCWC", unit="outer iter", disable=not verbose):
 
@@ -338,9 +387,27 @@ def optimize_NCWC(params_x, params_y, h_func, lip_h, D_y, prox_x, prox_y, epsilo
         solver_stats = solver.run()
 
         x_kp1 = [p.clone().detach() for p in params_x]
-        diff = compute_norm(solver.add_vals(x_kp1, solver.scale_vals(x_k, -1)))
+        diff = compute_norm(add_vals(x_kp1, scale_vals(x_k, -1)))
         final_diff = float(diff.item())
         num_outer_iters = k + 1
+        num_inner_iters += solver_stats["num_inner_iters"]
+        ncwc_terminated = diff <= epsilon / (4 * lip_h)
+
+        if progress_callback is not None:
+            progress_callback(
+                {
+                    "completed_outer_iters": num_outer_iters,
+                    "epsilon_k": epsilon_k,
+                    "final_diff": final_diff,
+                    "terminated": solver_stats["terminated"],
+                    "inner_terminated": solver_stats["terminated"],
+                    "ncwc_terminated": ncwc_terminated,
+                    "scsc_num_outer_iters": solver_stats["num_outer_iters"],
+                    "scsc_num_inner_iters": solver_stats["num_inner_iters"],
+                    "call_cumulative_scsc_inner_iters": num_inner_iters,
+                    "objective": _evaluate_objective(objective_func, params_x, params_y),
+                }
+            )
 
         if verbose and (
             k % log_every == 0 or final_diff <= epsilon / (4 * lip_h) or num_outer_iters == max_iter
@@ -351,7 +418,7 @@ def optimize_NCWC(params_x, params_y, h_func, lip_h, D_y, prox_x, prox_y, epsilo
                 flush=True,
             )
 
-        if diff <= epsilon / (4 * lip_h):
+        if ncwc_terminated:
             terminated = True
             break
 
@@ -361,7 +428,7 @@ def optimize_NCWC(params_x, params_y, h_func, lip_h, D_y, prox_x, prox_y, epsilo
 
     return {
         "num_outer_iters": num_outer_iters,
+        "num_inner_iters": num_inner_iters,
         "final_diff": final_diff,
         "terminated": terminated,
     }
-

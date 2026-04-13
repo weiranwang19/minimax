@@ -17,6 +17,22 @@ def _scale_prox_spec(prox_func, scale):
     return scaled
 
 
+def _adapt_ncwc_objective(objective_func, num_x, num_y):
+    if objective_func is None:
+        return None
+    if not callable(objective_func):
+        raise TypeError("objective_func must be callable")
+
+    def adapted(min_block, max_block):
+        del max_block
+        return objective_func(
+            min_block[:num_x],
+            min_block[num_x:num_x + num_y],
+        )
+
+    return adapted
+
+
 def _positive_part(v):
     return torch.clamp(v, min=0.0)
 
@@ -44,6 +60,8 @@ def optimize_bilevel_constrained_fop(
     max_iter=1000,
     verbose=False,
     log_every=1,
+    objective_func=None,
+    progress_callback=None,
 ):
     """
     Algorithm 4 for the constrained penalty reformulation.
@@ -93,6 +111,7 @@ def optimize_bilevel_constrained_fop(
     )
     prox_z = _expand_prox_spec(_scale_prox_spec(prox_y, rho), len(z_params))
     params_hat = params_x + params_y
+    ncwc_objective = _adapt_ncwc_objective(objective_func, len(params_x), len(params_y))
 
     lip_h = (
         L_grad_f1
@@ -114,6 +133,8 @@ def optimize_bilevel_constrained_fop(
         max_iter=max_iter,
         verbose=verbose,
         log_every=log_every,
+        objective_func=ncwc_objective,
+        progress_callback=progress_callback,
     )
 
     return {
@@ -149,6 +170,8 @@ def optimize_bilevel_constrained_smo(
     stage_callback=None,
     verbose=False,
     log_every=1,
+    objective_func=None,
+    progress_callback=None,
 ):
     """
     Algorithm 1 for the constrained bilevel reformulation in the sigma = 0 case.
@@ -219,6 +242,7 @@ def optimize_bilevel_constrained_smo(
     history = []
     num_outer_iters = 0
     epsilon_k = epsilon_0
+    ncwc_objective = _adapt_ncwc_objective(objective_func, len(params_x), len(params_y))
     while True:
         rho_k = epsilon_k ** -1
         mu_k = epsilon_k ** -3
@@ -282,6 +306,8 @@ def optimize_bilevel_constrained_smo(
             max_iter=subproblem_max_iter,
             verbose=verbose,
             log_every=log_every,
+            objective_func=ncwc_objective,
+            progress_callback=progress_callback,
         )
 
         z_state = clone_vals(z_params)
@@ -349,6 +375,8 @@ def optimize_bilevel_constrained_minimax(
         max_iter=1000,
         verbose=False,
         log_every=1,
+        objective_func=None,
+        progress_callback=None,
 ):
     """
     Our proposed method for the constrained penalty reformulation.
@@ -407,6 +435,7 @@ def optimize_bilevel_constrained_minimax(
         len(params_y1),
     ) + [_scale_prox_spec(prox_lagrange_multipliers, rho)]
     prox_z1_z2 = _expand_prox_spec(_scale_prox_spec(prox_y1, rho), len(params_z1)) + [_scale_prox_spec(prox_lagrange_multipliers, rho)]
+    ncwc_objective = _adapt_ncwc_objective(objective_func, len(params_x), len(params_y1))
 
     lip_h = (
             L_grad_f1
@@ -432,6 +461,8 @@ def optimize_bilevel_constrained_minimax(
         max_iter=max_iter,
         verbose=verbose,
         log_every=log_every,
+        objective_func=ncwc_objective,
+        progress_callback=progress_callback,
     )
 
     # TODO: Monitor feasibility of lower level constraint, suboptimality of lower level, obj value.
