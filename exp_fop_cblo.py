@@ -30,13 +30,9 @@ LOWER_GAP_TOL = 1e-2
 SEED = 0
 VERBOSE = True
 MAX_OUTER_ITERS = 16
-MAX_APG_ITERS = 100
 ALG4_MAX_ITERS = 20
 SMO_SUBPROBLEM_MAX_ITERS = 200
 SOLVER_LOG_EVERY = 1
-APG_LOG_EVERY = 250
-APG_PG_TOL_FACTOR = 0.1
-APG_OBJ_TOL_FACTOR = 0.1
 WANDB_ENABLED = True
 WANDB_PROJECT = "minimax"
 WANDB_ENTITY = None
@@ -54,6 +50,9 @@ FOP_STAGE_METRICS = (
     "fop/stage/rho",
     "fop/stage/mu",
     "fop/stage/epsilon",
+    "fop/warm_start/num_iters",
+    "fop/warm_start/target_num_iters",
+    "fop/warm_start/capped",
     "fop/subproblem/num_outer_iters",
     "fop/subproblem/num_inner_iters",
     "fop/subproblem/final_diff",
@@ -95,10 +94,7 @@ B_VEC = None
 Y_HAT = None
 
 CURRENT_RHO = None
-CURRENT_MU = None
-CURRENT_EPS = None
 CURRENT_L_G = None
-CURRENT_B_NORM = None
 
 
 class _NoOpRun:
@@ -152,7 +148,6 @@ def init_instance_run(problem_size, instance_idx):
         "feas_tol": FEAS_TOL,
         "lower_gap_tol": LOWER_GAP_TOL,
         "max_outer_iters": MAX_OUTER_ITERS,
-        "max_apg_iters": MAX_APG_ITERS,
         "alg4_max_iters": ALG4_MAX_ITERS,
         "smo_eps": SMO_EPS,
         "smo_epsilon_0": SMO_EPSILON_0,
@@ -279,23 +274,9 @@ def feasibility_norm(x_vec, z_vec):
     return float(torch.linalg.vector_norm(residual).item())
 
 
-# def lower_penalty_objective(x_vec, z_vec):
-#     """Penalized lower problem used to compute the APG warm start y_tilde."""
-#     residual = positive_part(constraint_residual(x_vec, z_vec))
-#     return torch.dot(D_TILDE, z_vec) + CURRENT_MU * torch.sum(torch.square(residual))
-#
-# def lower_penalty_gradient(x_vec, z_vec):
-#     residual = positive_part(constraint_residual(x_vec, z_vec))
-#     return D_TILDE + 2.0 * CURRENT_MU * (B_MAT.T @ residual)
-
-
 def compute_joint_constraint_lipschitz():
     """Lipschitz constant L_gtilde for the joint constraint map g_tilde(x, y) = A x + B y - b."""
     return float(torch.linalg.matrix_norm(torch.cat([A_MAT, B_MAT], dim=1), ord=2).item())
-
-
-def compute_b_matrix_norm():
-    return float(torch.linalg.matrix_norm(B_MAT, ord=2).item())
 
 
 def compute_gtilde_hi():
@@ -338,7 +319,7 @@ def generate_instance(problem_size, instance_idx):
     """
     global N, M, L
     global C, D, D_TILDE, A_MAT, B_MAT, B_VEC, Y_HAT
-    global CURRENT_L_G, CURRENT_B_NORM
+    global CURRENT_L_G
 
     # Page 12 top
     N, M, L = problem_size
@@ -355,78 +336,6 @@ def generate_instance(problem_size, instance_idx):
     D_TILDE = -B_MAT.T @ lam
 
     CURRENT_L_G = compute_joint_constraint_lipschitz()
-    CURRENT_B_NORM = compute_b_matrix_norm()
-
-#
-# def apg_warm_start(x_vec, z_init):
-#     step_lip = max(2.0 * CURRENT_MU * CURRENT_B_NORM * CURRENT_B_NORM, 1e-12)
-#     pg_tol = max(1e-8, APG_PG_TOL_FACTOR * CURRENT_EPS)
-#     obj_tol = APG_OBJ_TOL_FACTOR * CURRENT_EPS
-#
-#     z_curr = project_box(z_init.clone())
-#     y_curr = z_curr.clone()
-#     t_curr = 1.0
-#     curr_obj = float(lower_penalty_objective(x_vec, z_curr).item())
-#     best_z = z_curr.clone()
-#     best_obj = curr_obj
-#     last_pg_norm = None
-#
-#     for apg_iter in range(1, MAX_APG_ITERS + 1):
-#         grad = lower_penalty_gradient(x_vec, y_curr)
-#         z_next = project_box(y_curr - grad / step_lip)
-#         next_obj = float(lower_penalty_objective(x_vec, z_next).item())
-#         restarted = False
-#
-#         # Restart when the accelerated point increases the objective.
-#         if next_obj > curr_obj + 1e-12:
-#             y_curr = z_curr.clone()
-#             t_curr = 1.0
-#             grad = lower_penalty_gradient(x_vec, y_curr)
-#             z_next = project_box(y_curr - grad / step_lip)
-#             next_obj = float(lower_penalty_objective(x_vec, z_next).item())
-#             restarted = True
-#
-#         pg_norm = float((step_lip * torch.linalg.vector_norm(y_curr - z_next)).item())
-#         delta_obj = abs(next_obj - curr_obj)
-#
-#         if next_obj < best_obj:
-#             best_obj = next_obj
-#             best_z = z_next.clone()
-#
-#         if VERBOSE and (apg_iter == 1 or apg_iter % APG_LOG_EVERY == 0):
-#             print(
-#                 f"    APG iter={apg_iter} obj={next_obj:.3e} pg={pg_norm:.3e} restart={restarted}",
-#                 flush=True,
-#             )
-#
-#         if pg_norm <= pg_tol and delta_obj <= obj_tol:
-#             return best_z, {
-#                 "num_iters": apg_iter,
-#                 "terminated": True,
-#                 "best_obj": best_obj,
-#                 "pg_norm": pg_norm,
-#             }
-#
-#         t_next = 0.5 * (1.0 + math.sqrt(1.0 + 4.0 * t_curr * t_curr))
-#         y_next = z_next + ((t_curr - 1.0) / t_next) * (z_next - z_curr)
-#         y_next = project_box(y_next)
-#
-#         z_curr = z_next
-#         y_curr = y_next
-#         t_curr = t_next
-#         curr_obj = next_obj
-#         last_pg_norm = pg_norm
-#
-#     print(
-#         f"    APG warning: reached MAX_APG_ITERS={MAX_APG_ITERS} at epsilon={CURRENT_EPS:.3e}; using best iterate",
-#         flush=True,
-#     )
-#     return best_z, {
-#         "num_iters": MAX_APG_ITERS,
-#         "terminated": False,
-#         "best_obj": best_obj,
-#         "pg_norm": last_pg_norm,
-#     }
 
 
 def solve_lower_level_value(x_vec):
@@ -556,7 +465,7 @@ def run_single_instance_fop(instance_idx, problem_size):
                     + 2 * mu_k * (L_gtilde ** 2 + gtilde_hi * L_grad_gtilde)
             )
 
-            y_init, apg_stats = agd_convex(
+            y_init, warm_start_stats = agd_convex(
                 clone_vals([y_prev]),
                 smooth_lower_penalty,
                 [prox_y],
@@ -565,8 +474,6 @@ def run_single_instance_fop(instance_idx, problem_size):
                 d_y,
             )
             y_tilde_prev = y_init[0].detach().clone()
-
-            # y_tilde_prev, apg_stats = apg_warm_start(x_prev, y_tilde_prev)
 
             # The solver mutates these tensors in place to the next outer iterate.
             x_tensor = x_prev.clone().requires_grad_(True)
@@ -612,10 +519,9 @@ def run_single_instance_fop(instance_idx, problem_size):
                     "fop/stage/rho": rho_k,
                     "fop/stage/mu": mu_k,
                     "fop/stage/epsilon": epsilon_k,
-                    # "fop/apg/num_iters": apg_stats["num_iters"],
-                    # "fop/apg/terminated": float(apg_stats["terminated"]),
-                    # "fop/apg/best_obj": apg_stats["best_obj"],
-                    # "fop/apg/pg_norm": apg_stats["pg_norm"],
+                    "fop/warm_start/num_iters": warm_start_stats["num_iters"],
+                    "fop/warm_start/target_num_iters": warm_start_stats["target_num_iters"],
+                    "fop/warm_start/capped": float(warm_start_stats["capped"]),
                     "fop/subproblem/num_outer_iters": solver_result["solver_stats"]["num_outer_iters"],
                     "fop/subproblem/num_inner_iters": solver_result["solver_stats"]["num_inner_iters"],
                     "fop/subproblem/final_diff": solver_result["solver_stats"]["final_diff"],
@@ -629,7 +535,9 @@ def run_single_instance_fop(instance_idx, problem_size):
 
             if VERBOSE:
                 print(
-                    f"  Instance {instance_idx + 1}: outer={k} apg_iters={apg_stats['num_iters']} "
+                    f"  Instance {instance_idx + 1}: outer={k} "
+                    f"warm_start_iters={warm_start_stats['num_iters']}/{warm_start_stats['target_num_iters']} "
+                    f"warm_start_capped={int(warm_start_stats['capped'])} "
                     f"solver_outer={solver_result['solver_stats']['num_outer_iters']} "
                     f"feas={feas:.3e} gap={lower_gap:.3e} upper={current_upper:.3e}",
                     flush=True,
