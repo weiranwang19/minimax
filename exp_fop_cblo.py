@@ -7,9 +7,11 @@ import tqdm
 import torch
 from scipy.optimize import linprog
 
-from utils import clone_vals, assign_vals
-from agd import agd_convex
-from bilevel_solvers import optimize_bilevel_constrained_fop, optimize_bilevel_constrained_smo, positive_part_norm_sq
+from utils import clone_vals
+from bilevel_solvers import (
+    optimize_bilevel_constrained_smo,
+    optimize_bilevel_contrained_fop_practical,
+)
 
 
 torch.set_default_dtype(torch.float64)
@@ -412,8 +414,8 @@ def run_single_instance_fop(instance_idx, problem_size):
 
     Each outer stage:
     1. updates (rho_k, mu_k, epsilon_k),
-    2. computes a warm start y_tilde by APG,
-    3. calls Algorithm 4 / 6 through `optimize_bilevel_constrained_fop`,
+    2. computes a warm start y_tilde,
+    3. calls the practical FOP wrapper in `bilevel_solvers.py`,
     4. checks feasibility and the lower-level optimality gap.
     """
     run = init_instance_run(problem_size, instance_idx)
@@ -441,130 +443,108 @@ def run_single_instance_fop(instance_idx, problem_size):
     L_grad_gtilde = 0.0
     L_gtilde = CURRENT_L_G
 
+    def evaluate_iterate(x_vals, y_vals):
+        x_curr = x_vals[0]
+        y_curr = y_vals[0]
+        if torch.any(torch.abs(x_curr) > 1.0 + 1e-10):
+            raise RuntimeError("Outer iterate x left the box constraints")
+        if torch.any(torch.abs(y_curr) > 1.0 + 1e-10):
+            raise RuntimeError("Outer iterate y left the box constraints")
+        lower_star = solve_lower_level_value(x_curr)
+        return {
+            "upper_obj": upper_objective(x_curr, y_curr),
+            "feas": feasibility_norm(x_curr, y_curr),
+            "lower_gap": lower_objective(x_curr, y_curr) - lower_star,
+        }
+
+    def stage_callback(payload):
+        metrics = payload["metrics"]
+        log_stage(
+            run,
+            {
+                "fop/stage/index": payload["stage_index"],
+                "fop/stage/rho": payload["rho_k"],
+                "fop/stage/mu": payload["mu_k"],
+                "fop/stage/epsilon": payload["epsilon_k"],
+                "fop/warm_start/num_iters": payload["warm_start_iters"],
+                "fop/warm_start/target_num_iters": payload["warm_start_target_iters"],
+                "fop/warm_start/capped": float(payload["warm_start_capped"]),
+                "fop/subproblem/num_outer_iters": payload["subproblem_stats"]["num_outer_iters"],
+                "fop/subproblem/num_inner_iters": payload["subproblem_stats"]["num_inner_iters"],
+                "fop/subproblem/final_diff": payload["subproblem_stats"]["final_diff"],
+                "fop/subproblem/terminated": float(payload["subproblem_stats"]["terminated"]),
+                "fop/post/upper_obj": metrics["upper_obj"],
+                "fop/post/feas": metrics["feas"],
+                "fop/post/lower_gap": metrics["lower_gap"],
+            },
+            step=payload["stage_index"],
+        )
+
+        if VERBOSE:
+            print(
+                f"  Instance {instance_idx + 1}: outer={payload['stage_index']} "
+                f"warm_start_iters={payload['warm_start_iters']}/{payload['warm_start_target_iters']} "
+                f"warm_start_capped={int(payload['warm_start_capped'])} "
+                f"solver_outer={payload['subproblem_stats']['num_outer_iters']} "
+                f"feas={metrics['feas']:.3e} gap={metrics['lower_gap']:.3e} upper={metrics['upper_obj']:.3e}",
+                flush=True,
+            )
+
     try:
-        for k in tqdm.trange(MAX_OUTER_ITERS, desc=f"Instance {instance_idx + 1}/{NUM_INSTANCES}", unit="outer iter"):
-            rho_k = BASE_RHO ** (k - 1)
-            mu_k = rho_k ** 2
-            epsilon_k = 1.0 / rho_k
+        x_tensor = x_prev.clone().requires_grad_(True)
+        y_tensor = y_prev.clone().requires_grad_(True)
+        solver_result = optimize_bilevel_contrained_fop_practical(
+            [x_tensor],
+            [y_tensor],
+            upper_smooth,
+            lower_smooth,
+            lower_constraints,
+            prox_x,
+            prox_y,
+            D_y=d_y,
+            L_grad_f1=L_grad_f1,
+            L_grad_ftilde1=L_grad_ftilde1,
+            L_grad_gtilde=L_grad_gtilde,
+            L_gtilde=L_gtilde,
+            gtilde_hi=gtilde_hi,
+            base_rho=BASE_RHO,
+            final_epsilon=FINAL_EPS,
+            feas_tol=FEAS_TOL,
+            lower_gap_tol=LOWER_GAP_TOL,
+            subproblem_max_iter=ALG4_MAX_ITERS,
+            max_outer_iters=MAX_OUTER_ITERS,
+            objective_func=upper_smooth,
+            evaluate_iterate=evaluate_iterate,
+            stage_callback=stage_callback,
+            progress_callback=ncwc_progress_callback,
+            verbose=VERBOSE,
+            log_every=SOLVER_LOG_EVERY,
+            outer_desc=f"Instance {instance_idx + 1}/{NUM_INSTANCES}",
+        )
 
-            if VERBOSE:
-                print(
-                    f"  Instance {instance_idx + 1}: outer={k} rho={rho_k:.3e} "
-                    f"mu={mu_k:.3e} epsilon={epsilon_k:.3e}",
-                    flush=True,
-                )
-
-            def smooth_lower_penalty(z_vars):
-                constraint_z = lower_constraints([x_prev], z_vars)
-                penalty = positive_part_norm_sq(constraint_z) * mu_k
-                return lower_smooth(x_prev, z_vars) + penalty
-
-            # Estimating the gradient lipschitz constant for AGD.
-            L_hat_k = (
-                    L_grad_ftilde1
-                    + 2 * mu_k * (L_gtilde ** 2 + gtilde_hi * L_grad_gtilde)
-            )
-
-            y_init, warm_start_stats = agd_convex(
-                clone_vals([y_prev]),
-                smooth_lower_penalty,
-                [prox_y],
-                L_hat_k,
-                epsilon_k,
-                d_y,
-            )
-            y_tilde_prev = y_init[0].detach().clone()
-
-            # The solver mutates these tensors in place to the next outer iterate.
-            x_tensor = x_prev.clone().requires_grad_(True)
-            y_tensor = y_tilde_prev.clone().requires_grad_(True)
-            solver_result = optimize_bilevel_constrained_fop(
-                [x_tensor],
-                [y_tensor],
-                upper_smooth,
-                lower_smooth,
-                lower_constraints,
-                prox_x,
-                prox_y,
-                D_y=d_y,
-                L_grad_f1=L_grad_f1,
-                L_grad_ftilde1=L_grad_ftilde1,
-                L_grad_gtilde=L_grad_gtilde,
-                L_gtilde=CURRENT_L_G,
-                gtilde_hi=gtilde_hi,
-                epsilon=epsilon_k,
-                max_iter=ALG4_MAX_ITERS,
-                verbose=VERBOSE,
-                log_every=SOLVER_LOG_EVERY,
-                objective_func=upper_smooth,
-                progress_callback=ncwc_progress_callback,
-            )
-
-            x_prev = x_tensor.detach().clone()
-            y_prev = y_tensor.detach().clone()
-
-            if torch.any(torch.abs(x_prev) > 1.0 + 1e-10):
-                raise RuntimeError("Outer iterate x left the box constraints")
-            if torch.any(torch.abs(y_prev) > 1.0 + 1e-10):
-                raise RuntimeError("Outer iterate y left the box constraints")
-
-            feas = feasibility_norm(x_prev, y_prev)
-            lower_star = solve_lower_level_value(x_prev)
-            lower_gap = lower_objective(x_prev, y_prev) - lower_star
-            current_upper = upper_objective(x_prev, y_prev)
-            log_stage(
+        final_metrics = solver_result["final_metrics"]
+        if solver_result["terminated"] and final_metrics is not None:
+            elapsed = time.perf_counter() - start_time
+            result = {
+                "initial_objective": initial_objective,
+                "final_objective": final_metrics["upper_obj"],
+                "num_outer_iters": solver_result["num_outer_iters"],
+                "final_feas": final_metrics["feas"],
+                "final_lower_gap": final_metrics["lower_gap"],
+            }
+            finish_instance_run(
                 run,
                 {
-                    "fop/stage/index": k,
-                    "fop/stage/rho": rho_k,
-                    "fop/stage/mu": mu_k,
-                    "fop/stage/epsilon": epsilon_k,
-                    "fop/warm_start/num_iters": warm_start_stats["num_iters"],
-                    "fop/warm_start/target_num_iters": warm_start_stats["target_num_iters"],
-                    "fop/warm_start/capped": float(warm_start_stats["capped"]),
-                    "fop/subproblem/num_outer_iters": solver_result["solver_stats"]["num_outer_iters"],
-                    "fop/subproblem/num_inner_iters": solver_result["solver_stats"]["num_inner_iters"],
-                    "fop/subproblem/final_diff": solver_result["solver_stats"]["final_diff"],
-                    "fop/subproblem/terminated": float(solver_result["solver_stats"]["terminated"]),
-                    "fop/post/upper_obj": current_upper,
-                    "fop/post/feas": feas,
-                    "fop/post/lower_gap": lower_gap,
+                    "instance/initial_objective": result["initial_objective"],
+                    "instance/final_objective": result["final_objective"],
+                    "instance/num_outer_iters": result["num_outer_iters"],
+                    "instance/final_feas": result["final_feas"],
+                    "instance/final_lower_gap": result["final_lower_gap"],
+                    "instance/elapsed_sec": elapsed,
                 },
-                step=k,
             )
-
-            if VERBOSE:
-                print(
-                    f"  Instance {instance_idx + 1}: outer={k} "
-                    f"warm_start_iters={warm_start_stats['num_iters']}/{warm_start_stats['target_num_iters']} "
-                    f"warm_start_capped={int(warm_start_stats['capped'])} "
-                    f"solver_outer={solver_result['solver_stats']['num_outer_iters']} "
-                    f"feas={feas:.3e} gap={lower_gap:.3e} upper={current_upper:.3e}",
-                    flush=True,
-                )
-
-            if epsilon_k <= FINAL_EPS and feas <= FEAS_TOL and lower_gap <= LOWER_GAP_TOL:
-                elapsed = time.perf_counter() - start_time
-                result = {
-                    "initial_objective": initial_objective,
-                    "final_objective": current_upper,
-                    "num_outer_iters": k + 1,
-                    "final_feas": feas,
-                    "final_lower_gap": lower_gap,
-                }
-                finish_instance_run(
-                    run,
-                    {
-                        "instance/initial_objective": result["initial_objective"],
-                        "instance/final_objective": result["final_objective"],
-                        "instance/num_outer_iters": result["num_outer_iters"],
-                        "instance/final_feas": result["final_feas"],
-                        "instance/final_lower_gap": result["final_lower_gap"],
-                        "instance/elapsed_sec": elapsed,
-                    },
-                )
-                run_finished = True
-                return result
+            run_finished = True
+            return result
 
         elapsed = time.perf_counter() - start_time
         finish_instance_run(

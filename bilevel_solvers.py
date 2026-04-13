@@ -1,5 +1,6 @@
 import math
 import torch
+import tqdm
 from utils import clone_vals, assign_vals
 from minimax import optimize_NCWC
 from agd import agd_convex
@@ -143,6 +144,179 @@ def optimize_bilevel_constrained_fop(
         "mu": mu,
         "epsilon_0": epsilon_0,
         "solver_stats": solver_stats,
+    }
+
+
+def optimize_bilevel_contrained_fop_practical(
+    params_x,
+    params_y,
+    upper_smooth,
+    lower_smooth,
+    lower_constraints,
+    prox_x,
+    prox_y,
+    D_y,
+    L_grad_f1,
+    L_grad_ftilde1,
+    L_grad_gtilde,
+    L_gtilde,
+    gtilde_hi,
+    base_rho,
+    final_epsilon,
+    feas_tol=None,
+    lower_gap_tol=None,
+    warm_start_max_iter=None,
+    subproblem_max_iter=1000,
+    max_outer_iters=1000,
+    lr=1,
+    objective_func=None,
+    evaluate_iterate=None,
+    stage_callback=None,
+    progress_callback=None,
+    verbose=False,
+    log_every=1,
+    outer_desc=None,
+):
+    """
+    Practical outer-loop wrapper for FOP that warm-starts each stage and
+    repeatedly calls the constrained FOP subproblem solver.
+    """
+    if base_rho <= 0:
+        raise ValueError(f"Invalid base_rho: {base_rho}")
+    if final_epsilon <= 0:
+        raise ValueError(f"Invalid final_epsilon: {final_epsilon}")
+    if D_y <= 0:
+        raise ValueError(f"Invalid D_y: {D_y}")
+    if warm_start_max_iter is not None and warm_start_max_iter < 0:
+        raise ValueError(f"Invalid warm_start_max_iter: {warm_start_max_iter}")
+    if subproblem_max_iter <= 0:
+        raise ValueError(f"Invalid subproblem_max_iter: {subproblem_max_iter}")
+    if max_outer_iters <= 0:
+        raise ValueError(f"Invalid max_outer_iters: {max_outer_iters}")
+    if log_every <= 0:
+        raise ValueError(f"Invalid log_every: {log_every}")
+    if evaluate_iterate is not None and not callable(evaluate_iterate):
+        raise TypeError("evaluate_iterate must be callable")
+    if stage_callback is not None and not callable(stage_callback):
+        raise TypeError("stage_callback must be callable")
+
+    params_x = list(params_x)
+    params_y = list(params_y)
+    if not params_x:
+        raise ValueError("params_x must contain at least one tensor")
+    if not params_y:
+        raise ValueError("params_y must contain at least one tensor")
+
+    prox_y_funcs = list(prox_y) if isinstance(prox_y, (list, tuple)) else _expand_prox_spec(prox_y, len(params_y))
+    if len(prox_y_funcs) != len(params_y):
+        raise ValueError(f"Expected {len(params_y)} proximal operators for y, got {len(prox_y_funcs)}")
+
+    y_tilde_prev = clone_vals(params_y)
+    history = []
+    final_metrics = None
+    terminated = False
+    last_solver_result = None
+
+    for k in tqdm.trange(
+        max_outer_iters,
+        desc=outer_desc,
+        unit="outer iter",
+        disable=outer_desc is None,
+    ):
+        rho_k = base_rho ** (k - 1)
+        mu_k = rho_k ** 2
+        epsilon_k = 1.0 / rho_k
+
+        if verbose:
+            print(
+                f"fop_practical outer={k} rho={rho_k:.3e} mu={mu_k:.3e} epsilon={epsilon_k:.3e}",
+                flush=True,
+            )
+
+        def smooth_lower_penalty(z_vars):
+            constraint_z = lower_constraints(params_x, z_vars)
+            penalty = mu_k * positive_part_norm_sq(constraint_z)
+            return lower_smooth(params_x, z_vars) + penalty
+
+        L_hat_k = L_grad_ftilde1 + 2.0 * mu_k * (L_gtilde ** 2 + gtilde_hi * L_grad_gtilde)
+
+        y_init, warm_start_stats = agd_convex(
+            clone_vals(params_y),
+            smooth_lower_penalty,
+            prox_y_funcs,
+            L_hat_k,
+            epsilon_k,
+            D_y,
+            max_iter=warm_start_max_iter,
+        )
+        y_tilde_prev = clone_vals(y_init)
+
+        x_stage = clone_vals(params_x, requires_grad=True)
+        y_stage = clone_vals(y_tilde_prev, requires_grad=True)
+        last_solver_result = optimize_bilevel_constrained_fop(
+            x_stage,
+            y_stage,
+            upper_smooth,
+            lower_smooth,
+            lower_constraints,
+            prox_x,
+            prox_y,
+            D_y=D_y,
+            L_grad_f1=L_grad_f1,
+            L_grad_ftilde1=L_grad_ftilde1,
+            L_grad_gtilde=L_grad_gtilde,
+            L_gtilde=L_gtilde,
+            gtilde_hi=gtilde_hi,
+            epsilon=epsilon_k,
+            lr=lr,
+            max_iter=subproblem_max_iter,
+            verbose=verbose,
+            log_every=log_every,
+            objective_func=objective_func,
+            progress_callback=progress_callback,
+        )
+        assign_vals(params_x, x_stage)
+        assign_vals(params_y, y_stage)
+
+        metrics = None if evaluate_iterate is None else evaluate_iterate(params_x, params_y)
+        final_metrics = metrics
+
+        stage_summary = {
+            "stage_index": k,
+            "rho_k": rho_k,
+            "mu_k": mu_k,
+            "epsilon_k": epsilon_k,
+            "warm_start_iters": warm_start_stats["num_iters"],
+            "warm_start_target_iters": warm_start_stats["target_num_iters"],
+            "warm_start_capped": warm_start_stats["capped"],
+            "subproblem_stats": last_solver_result["solver_stats"],
+            "metrics": metrics,
+        }
+        history.append(stage_summary)
+
+        if stage_callback is not None:
+            stage_callback(
+                {
+                    **stage_summary,
+                    "x": clone_vals(params_x),
+                    "y": clone_vals(params_y),
+                }
+            )
+
+        if metrics is not None and feas_tol is not None and lower_gap_tol is not None:
+            if epsilon_k <= final_epsilon and metrics["feas"] <= feas_tol and metrics["lower_gap"] <= lower_gap_tol:
+                terminated = True
+                break
+        elif epsilon_k <= final_epsilon:
+            terminated = True
+            break
+
+    return {
+        "num_outer_iters": len(history),
+        "terminated": terminated,
+        "history": history,
+        "final_metrics": final_metrics,
+        "last_subproblem": last_solver_result,
     }
 
 
