@@ -1,6 +1,8 @@
-from minimax import optimize_NCWC
+import math
+import torch
 from utils import clone_vals, assign_vals
-
+from minimax import optimize_NCWC
+from agd import agd_convex
 
 def _expand_prox_spec(prox_func, count):
     return [prox_func] * count
@@ -231,7 +233,7 @@ def optimize_bilevel_constrained_smo(
             + (mu_k * (L_gtilde ** 2 + gtilde_hi * L_grad_gtilde) + lambda_norm * L_grad_gtilde) / rho_k
         )
 
-        y_init, warm_start_stats = _solve_alg_a1_convex(
+        y_init, warm_start_stats = agd_convex(
             clone_vals(params_y),
             smooth_lower_aug,
             prox_y_funcs,
@@ -434,7 +436,7 @@ def optimize_bilevel_constrained_minimax(
     # TODO: Monitor feasibility of lower level constraint, suboptimality of lower level, obj value.
 
     return {
-        "z_eps": clone_vals(z_params),
+        "z_eps": clone_vals(params_z1),
         "rho": rho,
         "epsilon_0": epsilon_0,
         "solver_stats": solver_stats,
