@@ -34,6 +34,22 @@ def _adapt_ncwc_objective(objective_func, num_x, num_y):
     return adapted
 
 
+def _adapt_ncwc_metrics(metrics_func, num_x, num_y):
+    if metrics_func is None:
+        return None
+    if not callable(metrics_func):
+        raise TypeError("metrics_func must be callable")
+
+    def adapted(min_block, max_block):
+        del max_block
+        return metrics_func(
+            min_block[:num_x],
+            min_block[num_x:num_x + num_y],
+        )
+
+    return adapted
+
+
 def _positive_part(v):
     return torch.clamp(v, min=0.0)
 
@@ -62,6 +78,7 @@ def optimize_bilevel_constrained_fop(
     verbose=False,
     log_every=1,
     objective_func=None,
+    metrics_func=None,
     progress_callback=None,
 ):
     """
@@ -113,6 +130,7 @@ def optimize_bilevel_constrained_fop(
     prox_z = _expand_prox_spec(_scale_prox_spec(prox_y, rho), len(z_params))
     params_hat = params_x + params_y
     ncwc_objective = _adapt_ncwc_objective(objective_func, len(params_x), len(params_y))
+    ncwc_metrics = _adapt_ncwc_metrics(metrics_func, len(params_x), len(params_y))
 
     lip_h = (
         L_grad_f1
@@ -135,6 +153,7 @@ def optimize_bilevel_constrained_fop(
         verbose=verbose,
         log_every=log_every,
         objective_func=ncwc_objective,
+        metrics_func=ncwc_metrics,
         progress_callback=progress_callback,
     )
 
@@ -170,6 +189,7 @@ def optimize_bilevel_contrained_fop_practical(
     max_outer_iters=1000,
     lr=1,
     objective_func=None,
+    metrics_func=None,
     evaluate_iterate=None,
     stage_callback=None,
     progress_callback=None,
@@ -273,6 +293,7 @@ def optimize_bilevel_contrained_fop_practical(
             verbose=verbose,
             log_every=log_every,
             objective_func=objective_func,
+            metrics_func=metrics_func,
             progress_callback=progress_callback,
         )
         assign_vals(params_x, x_stage)
@@ -345,6 +366,7 @@ def optimize_bilevel_constrained_smo(
     verbose=False,
     log_every=1,
     objective_func=None,
+    metrics_func=None,
     progress_callback=None,
 ):
     """
@@ -417,6 +439,7 @@ def optimize_bilevel_constrained_smo(
     num_outer_iters = 0
     epsilon_k = epsilon_0
     ncwc_objective = _adapt_ncwc_objective(objective_func, len(params_x), len(params_y))
+    ncwc_metrics = _adapt_ncwc_metrics(metrics_func, len(params_x), len(params_y))
     while True:
         rho_k = epsilon_k ** -1
         mu_k = epsilon_k ** -3
@@ -481,6 +504,7 @@ def optimize_bilevel_constrained_smo(
             verbose=verbose,
             log_every=log_every,
             objective_func=ncwc_objective,
+            metrics_func=ncwc_metrics,
             progress_callback=progress_callback,
         )
 

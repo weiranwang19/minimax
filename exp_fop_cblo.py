@@ -42,6 +42,8 @@ WANDB_MODE = "online"
 WANDB_TAGS = ()
 NCWC_HISTORY_METRICS = (
     "ncwc/upper_obj",
+    "ncwc/feas",
+    "ncwc/lower_gap",
     "ncwc/call_index",
     "ncwc/completed_outer_iters",
     "ncwc/scsc_inner_iters",
@@ -199,11 +201,14 @@ def build_ncwc_progress_logger(run, ncwc_state):
         cumulative_scsc_inner_iters = (
             base_scsc_inner_iters + payload["call_cumulative_scsc_inner_iters"]
         )
+        metrics = payload.get("metrics") or {}
         log_history(
             run,
             {
                 "ncwc/cumulative_scsc_inner_iters": cumulative_scsc_inner_iters,
-                "ncwc/upper_obj": payload["objective"],
+                "ncwc/upper_obj": metrics.get("upper_obj", payload["objective"]),
+                "ncwc/feas": metrics.get("feas"),
+                "ncwc/lower_gap": metrics.get("lower_gap"),
                 "ncwc/call_index": call_index,
                 "ncwc/completed_outer_iters": payload["completed_outer_iters"],
                 "ncwc/scsc_inner_iters": payload["scsc_num_inner_iters"],
@@ -514,6 +519,7 @@ def run_single_instance_fop(instance_idx, problem_size):
             subproblem_max_iter=ALG4_MAX_ITERS,
             max_outer_iters=MAX_OUTER_ITERS,
             objective_func=upper_smooth,
+            metrics_func=evaluate_iterate,
             evaluate_iterate=evaluate_iterate,
             stage_callback=stage_callback,
             progress_callback=ncwc_progress_callback,
@@ -647,6 +653,16 @@ def run_single_instance_smo(instance_idx, problem_size):
                 flush=True,
             )
 
+    def evaluate_ncwc_iterate(x_vals, y_vals):
+        x_curr = x_vals[0]
+        y_curr = y_vals[0]
+        lower_star = solve_lower_level_value(x_curr)
+        return {
+            "upper_obj": upper_objective(x_curr, y_curr),
+            "feas": feasibility_norm(x_curr, y_curr),
+            "lower_gap": lower_objective(x_curr, y_curr) - lower_star,
+        }
+
     try:
         x_tensor = initial_x.clone().requires_grad_(True)
         y_tensor = initial_y.clone().requires_grad_(True)
@@ -672,6 +688,7 @@ def run_single_instance_smo(instance_idx, problem_size):
             verbose=VERBOSE,
             log_every=SOLVER_LOG_EVERY,
             objective_func=upper_smooth,
+            metrics_func=evaluate_ncwc_iterate,
             progress_callback=ncwc_progress_callback,
         )
 

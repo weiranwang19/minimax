@@ -290,6 +290,25 @@ def _evaluate_objective(objective_func, params_x, params_y):
     return float(value)
 
 
+def _evaluate_metrics(metrics_func, params_x, params_y):
+    if metrics_func is None:
+        return None
+    with torch.no_grad():
+        metrics = metrics_func(params_x, params_y)
+    if metrics is None:
+        return None
+    if not isinstance(metrics, dict):
+        raise TypeError("metrics_func must return a dict or None")
+    normalized = {}
+    for key, value in metrics.items():
+        if torch.is_tensor(value):
+            normalized[key] = float(value.item())
+        else:
+            normalized[key] = float(value)
+    return normalized
+
+
+
 def optimize_NCWC(
     params_x,
     params_y,
@@ -305,6 +324,7 @@ def optimize_NCWC(
     verbose=False,
     log_every=1,
     objective_func=None,
+    metrics_func=None,
     progress_callback=None,
 ):
     """
@@ -325,6 +345,8 @@ def optimize_NCWC(
         raise ValueError(f"Invalid log_every: {log_every}")
     if objective_func is not None and not callable(objective_func):
         raise TypeError("objective_func must be callable")
+    if metrics_func is not None and not callable(metrics_func):
+        raise TypeError("metrics_func must be callable")
     if progress_callback is not None and not callable(progress_callback):
         raise TypeError("progress_callback must be callable")
 
@@ -351,6 +373,7 @@ def optimize_NCWC(
                 "scsc_num_inner_iters": 0,
                 "call_cumulative_scsc_inner_iters": 0,
                 "objective": _evaluate_objective(objective_func, params_x, params_y),
+                "metrics": _evaluate_metrics(metrics_func, params_x, params_y),
             }
         )
 
@@ -406,9 +429,7 @@ def optimize_NCWC(
                     "scsc_num_inner_iters": solver_stats["num_inner_iters"],
                     "call_cumulative_scsc_inner_iters": num_inner_iters,
                     "objective": _evaluate_objective(objective_func, params_x, params_y),
-                    # TODO: We want lower-gap and lower feasibility.
-                    # We probably want to pass in a dictionary of functions {'upper_obj': func1, 'lower_gap': func2, 'lower_feas:' func3} and get corresponding metrics.
-                    # "upper_obj": func1(x,y)
+                    "metrics": _evaluate_metrics(metrics_func, params_x, params_y),
                 }
             )
 
