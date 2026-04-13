@@ -7,7 +7,9 @@ import tqdm
 import torch
 from scipy.optimize import linprog
 
-from minimax import optimize_bilevel_constrained_fop, optimize_bilevel_constrained_smo
+from utils import clone_vals, assign_vals
+from agd import agd_convex
+from bilevel_solvers import optimize_bilevel_constrained_fop, optimize_bilevel_constrained_smo, positive_part_norm_sq
 
 
 torch.set_default_dtype(torch.float64)
@@ -174,14 +176,14 @@ def feasibility_norm(x_vec, z_vec):
     return float(torch.linalg.vector_norm(residual).item())
 
 
-def lower_penalty_objective(x_vec, z_vec):
-    """Penalized lower problem used to compute the APG warm start y_tilde."""
-    residual = positive_part(constraint_residual(x_vec, z_vec))
-    return torch.dot(D_TILDE, z_vec) + CURRENT_MU * torch.sum(torch.square(residual))
-
-def lower_penalty_gradient(x_vec, z_vec):
-    residual = positive_part(constraint_residual(x_vec, z_vec))
-    return D_TILDE + 2.0 * CURRENT_MU * (B_MAT.T @ residual)
+# def lower_penalty_objective(x_vec, z_vec):
+#     """Penalized lower problem used to compute the APG warm start y_tilde."""
+#     residual = positive_part(constraint_residual(x_vec, z_vec))
+#     return torch.dot(D_TILDE, z_vec) + CURRENT_MU * torch.sum(torch.square(residual))
+#
+# def lower_penalty_gradient(x_vec, z_vec):
+#     residual = positive_part(constraint_residual(x_vec, z_vec))
+#     return D_TILDE + 2.0 * CURRENT_MU * (B_MAT.T @ residual)
 
 
 def compute_joint_constraint_lipschitz():
@@ -238,76 +240,76 @@ def generate_instance(problem_size):
     CURRENT_L_G = compute_joint_constraint_lipschitz()
     CURRENT_B_NORM = compute_b_matrix_norm()
 
-
-def apg_warm_start(x_vec, z_init):
-    step_lip = max(2.0 * CURRENT_MU * CURRENT_B_NORM * CURRENT_B_NORM, 1e-12)
-    pg_tol = max(1e-8, APG_PG_TOL_FACTOR * CURRENT_EPS)
-    obj_tol = APG_OBJ_TOL_FACTOR * CURRENT_EPS
-
-    z_curr = project_box(z_init.clone())
-    y_curr = z_curr.clone()
-    t_curr = 1.0
-    curr_obj = float(lower_penalty_objective(x_vec, z_curr).item())
-    best_z = z_curr.clone()
-    best_obj = curr_obj
-    last_pg_norm = None
-
-    for apg_iter in range(1, MAX_APG_ITERS + 1):
-        grad = lower_penalty_gradient(x_vec, y_curr)
-        z_next = project_box(y_curr - grad / step_lip)
-        next_obj = float(lower_penalty_objective(x_vec, z_next).item())
-        restarted = False
-
-        # Restart when the accelerated point increases the objective.
-        if next_obj > curr_obj + 1e-12:
-            y_curr = z_curr.clone()
-            t_curr = 1.0
-            grad = lower_penalty_gradient(x_vec, y_curr)
-            z_next = project_box(y_curr - grad / step_lip)
-            next_obj = float(lower_penalty_objective(x_vec, z_next).item())
-            restarted = True
-
-        pg_norm = float((step_lip * torch.linalg.vector_norm(y_curr - z_next)).item())
-        delta_obj = abs(next_obj - curr_obj)
-
-        if next_obj < best_obj:
-            best_obj = next_obj
-            best_z = z_next.clone()
-
-        if VERBOSE and (apg_iter == 1 or apg_iter % APG_LOG_EVERY == 0):
-            print(
-                f"    APG iter={apg_iter} obj={next_obj:.3e} pg={pg_norm:.3e} restart={restarted}",
-                flush=True,
-            )
-
-        if pg_norm <= pg_tol and delta_obj <= obj_tol:
-            return best_z, {
-                "num_iters": apg_iter,
-                "terminated": True,
-                "best_obj": best_obj,
-                "pg_norm": pg_norm,
-            }
-
-        t_next = 0.5 * (1.0 + math.sqrt(1.0 + 4.0 * t_curr * t_curr))
-        y_next = z_next + ((t_curr - 1.0) / t_next) * (z_next - z_curr)
-        y_next = project_box(y_next)
-
-        z_curr = z_next
-        y_curr = y_next
-        t_curr = t_next
-        curr_obj = next_obj
-        last_pg_norm = pg_norm
-
-    print(
-        f"    APG warning: reached MAX_APG_ITERS={MAX_APG_ITERS} at epsilon={CURRENT_EPS:.3e}; using best iterate",
-        flush=True,
-    )
-    return best_z, {
-        "num_iters": MAX_APG_ITERS,
-        "terminated": False,
-        "best_obj": best_obj,
-        "pg_norm": last_pg_norm,
-    }
+#
+# def apg_warm_start(x_vec, z_init):
+#     step_lip = max(2.0 * CURRENT_MU * CURRENT_B_NORM * CURRENT_B_NORM, 1e-12)
+#     pg_tol = max(1e-8, APG_PG_TOL_FACTOR * CURRENT_EPS)
+#     obj_tol = APG_OBJ_TOL_FACTOR * CURRENT_EPS
+#
+#     z_curr = project_box(z_init.clone())
+#     y_curr = z_curr.clone()
+#     t_curr = 1.0
+#     curr_obj = float(lower_penalty_objective(x_vec, z_curr).item())
+#     best_z = z_curr.clone()
+#     best_obj = curr_obj
+#     last_pg_norm = None
+#
+#     for apg_iter in range(1, MAX_APG_ITERS + 1):
+#         grad = lower_penalty_gradient(x_vec, y_curr)
+#         z_next = project_box(y_curr - grad / step_lip)
+#         next_obj = float(lower_penalty_objective(x_vec, z_next).item())
+#         restarted = False
+#
+#         # Restart when the accelerated point increases the objective.
+#         if next_obj > curr_obj + 1e-12:
+#             y_curr = z_curr.clone()
+#             t_curr = 1.0
+#             grad = lower_penalty_gradient(x_vec, y_curr)
+#             z_next = project_box(y_curr - grad / step_lip)
+#             next_obj = float(lower_penalty_objective(x_vec, z_next).item())
+#             restarted = True
+#
+#         pg_norm = float((step_lip * torch.linalg.vector_norm(y_curr - z_next)).item())
+#         delta_obj = abs(next_obj - curr_obj)
+#
+#         if next_obj < best_obj:
+#             best_obj = next_obj
+#             best_z = z_next.clone()
+#
+#         if VERBOSE and (apg_iter == 1 or apg_iter % APG_LOG_EVERY == 0):
+#             print(
+#                 f"    APG iter={apg_iter} obj={next_obj:.3e} pg={pg_norm:.3e} restart={restarted}",
+#                 flush=True,
+#             )
+#
+#         if pg_norm <= pg_tol and delta_obj <= obj_tol:
+#             return best_z, {
+#                 "num_iters": apg_iter,
+#                 "terminated": True,
+#                 "best_obj": best_obj,
+#                 "pg_norm": pg_norm,
+#             }
+#
+#         t_next = 0.5 * (1.0 + math.sqrt(1.0 + 4.0 * t_curr * t_curr))
+#         y_next = z_next + ((t_curr - 1.0) / t_next) * (z_next - z_curr)
+#         y_next = project_box(y_next)
+#
+#         z_curr = z_next
+#         y_curr = y_next
+#         t_curr = t_next
+#         curr_obj = next_obj
+#         last_pg_norm = pg_norm
+#
+#     print(
+#         f"    APG warning: reached MAX_APG_ITERS={MAX_APG_ITERS} at epsilon={CURRENT_EPS:.3e}; using best iterate",
+#         flush=True,
+#     )
+#     return best_z, {
+#         "num_iters": MAX_APG_ITERS,
+#         "terminated": False,
+#         "best_obj": best_obj,
+#         "pg_norm": last_pg_norm,
+#     }
 
 
 def solve_lower_level_value(x_vec):
@@ -387,7 +389,6 @@ def run_single_instance_fop(instance_idx, problem_size):
     3. calls Algorithm 4 / 6 through `optimize_bilevel_constrained_fop`,
     4. checks feasibility and the lower-level optimality gap.
     """
-    global CURRENT_RHO, CURRENT_MU, CURRENT_EPS
     run = init_instance_run(problem_size, instance_idx)
     start_time = time.perf_counter()
     run_finished = False
@@ -399,20 +400,49 @@ def run_single_instance_fop(instance_idx, problem_size):
     gtilde_hi = compute_gtilde_hi()
     d_y = compute_d_y()
 
+    prox_x = prox_box
+    prox_y = prox_box
+
+    L_grad_f1 = 0.0
+    L_grad_ftilde1 = 0.0
+    L_grad_gtilde = 0.0
+    L_gtilde = CURRENT_L_G
+
     try:
         for k in tqdm.trange(MAX_OUTER_ITERS, desc=f"Instance {instance_idx + 1}/{NUM_INSTANCES}", unit="outer iter"):
-            CURRENT_RHO = BASE_RHO ** (k + 1)
-            CURRENT_MU = CURRENT_RHO ** 2
-            CURRENT_EPS = 1.0 / CURRENT_RHO
+            rho_k = BASE_RHO ** (k + 1)   # Weiran: paper says k-1 instead of k+1.
+            mu_k = rho_k ** 2
+            epsilon_k = 1.0 / rho_k
 
             if VERBOSE:
                 print(
-                    f"  Instance {instance_idx + 1}: outer={k} rho={CURRENT_RHO:.3e} "
-                    f"mu={CURRENT_MU:.3e} epsilon={CURRENT_EPS:.3e}",
+                    f"  Instance {instance_idx + 1}: outer={k} rho={rho_k:.3e} "
+                    f"mu={mu_k:.3e} epsilon={epsilon_k:.3e}",
                     flush=True,
                 )
 
-            y_tilde_prev, apg_stats = apg_warm_start(x_prev, y_tilde_prev)
+            def smooth_lower_penalty(z_vars):
+                constraint_z = lower_constraints(x_prev, z_vars)
+                penalty = positive_part_norm_sq(constraint_z) * mu_k
+                return lower_smooth(x_prev, z_vars) + penalty
+
+            # Estimating the gradient lipschitz constant for AGD.
+            L_hat_k = (
+                    L_grad_ftilde1
+                    + 2 * mu_k * (L_gtilde ** 2 + gtilde_hi * L_grad_gtilde)
+            )
+
+            y_init, apg_stats = agd_convex(
+                clone_vals(y_prev),
+                smooth_lower_penalty,
+                prox_y,
+                L_hat_k,
+                epsilon_k,
+                d_y,
+            )
+            assign_vals(y_tilde_prev, y_init)
+
+            # y_tilde_prev, apg_stats = apg_warm_start(x_prev, y_tilde_prev)
 
             # The solver mutates these tensors in place to the next outer iterate.
             x_tensor = x_prev.clone().requires_grad_(True)
@@ -423,15 +453,15 @@ def run_single_instance_fop(instance_idx, problem_size):
                 upper_smooth,
                 lower_smooth,
                 lower_constraints,
-                prox_box,
-                prox_box,
+                prox_x,
+                prox_y,
                 D_y=d_y,
-                L_grad_f1=0.0,
-                L_grad_ftilde1=0.0,
-                L_grad_gtilde=0.0,
+                L_grad_f1=L_grad_f1,
+                L_grad_ftilde1=L_grad_ftilde1,
+                L_grad_gtilde=L_grad_gtilde,
                 L_gtilde=CURRENT_L_G,
                 gtilde_hi=gtilde_hi,
-                epsilon=CURRENT_EPS,
+                epsilon=epsilon_k,
                 max_iter=ALG4_MAX_ITERS,
                 verbose=VERBOSE,
                 log_every=SOLVER_LOG_EVERY,
@@ -453,13 +483,13 @@ def run_single_instance_fop(instance_idx, problem_size):
                 run,
                 {
                     "fop/stage/index": k,
-                    "fop/stage/rho": CURRENT_RHO,
-                    "fop/stage/mu": CURRENT_MU,
-                    "fop/stage/epsilon": CURRENT_EPS,
-                    "fop/apg/num_iters": apg_stats["num_iters"],
-                    "fop/apg/terminated": float(apg_stats["terminated"]),
-                    "fop/apg/best_obj": apg_stats["best_obj"],
-                    "fop/apg/pg_norm": apg_stats["pg_norm"],
+                    "fop/stage/rho": rho_k,
+                    "fop/stage/mu": mu_k,
+                    "fop/stage/epsilon": epsilon_k,
+                    # "fop/apg/num_iters": apg_stats["num_iters"],
+                    # "fop/apg/terminated": float(apg_stats["terminated"]),
+                    # "fop/apg/best_obj": apg_stats["best_obj"],
+                    # "fop/apg/pg_norm": apg_stats["pg_norm"],
                     "fop/subproblem/num_outer_iters": solver_result["solver_stats"]["num_outer_iters"],
                     "fop/subproblem/final_diff": solver_result["solver_stats"]["final_diff"],
                     "fop/subproblem/terminated": float(solver_result["solver_stats"]["terminated"]),
@@ -478,7 +508,7 @@ def run_single_instance_fop(instance_idx, problem_size):
                     flush=True,
                 )
 
-            if CURRENT_EPS <= FINAL_EPS and feas <= FEAS_TOL and lower_gap <= LOWER_GAP_TOL:
+            if epsilon_k <= FINAL_EPS and feas <= FEAS_TOL and lower_gap <= LOWER_GAP_TOL:
                 elapsed = time.perf_counter() - start_time
                 result = {
                     "initial_objective": initial_objective,

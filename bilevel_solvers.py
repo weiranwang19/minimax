@@ -4,6 +4,7 @@ from utils import clone_vals, assign_vals
 from minimax import optimize_NCWC
 from agd import agd_convex
 
+
 def _expand_prox_spec(prox_func, count):
     return [prox_func] * count
 
@@ -20,7 +21,7 @@ def _positive_part(v):
     return torch.clamp(v, min=0.0)
 
 
-def _positive_part_norm_sq(v):
+def positive_part_norm_sq(v):
     return torch.sum(torch.square(_positive_part(v)))
 
 
@@ -81,9 +82,9 @@ def optimize_bilevel_constrained_fop(
         return (
             upper_term
             + rho * lower_y
-            + rho * mu * _positive_part_norm_sq(constraint_y)
+            + rho * mu * positive_part_norm_sq(constraint_y)
             - rho * lower_z
-            - rho * mu * _positive_part_norm_sq(constraint_z)
+            - rho * mu * positive_part_norm_sq(constraint_z)
         )
 
     prox_hat = _expand_prox_spec(prox_x, len(params_x)) + _expand_prox_spec(
@@ -225,7 +226,7 @@ def optimize_bilevel_constrained_smo(
 
         def smooth_lower_aug(z_vars):
             constraint_z = lower_constraints(params_x, z_vars)
-            penalty = _positive_part_norm_sq(lambda_k + mu_k * constraint_z) / (2.0 * rho_k * mu_k)
+            penalty = positive_part_norm_sq(lambda_k + mu_k * constraint_z) / (2.0 * rho_k * mu_k)
             return lower_smooth(params_x, z_vars) + penalty
 
         L_hat_k = (
@@ -253,8 +254,8 @@ def optimize_bilevel_constrained_smo(
             lower_z = lower_smooth(params_x, z_params)
             constraint_y = lower_constraints(params_x, params_y)
             constraint_z = lower_constraints(params_x, z_params)
-            penalty_y = _positive_part_norm_sq(lambda_k + mu_k * constraint_y) / (2.0 * mu_k)
-            penalty_z = _positive_part_norm_sq(lambda_k + mu_k * constraint_z) / (2.0 * mu_k)
+            penalty_y = positive_part_norm_sq(lambda_k + mu_k * constraint_y) / (2.0 * mu_k)
+            penalty_z = positive_part_norm_sq(lambda_k + mu_k * constraint_z) / (2.0 * mu_k)
             return upper_term + rho_k * lower_y + penalty_y - rho_k * lower_z - penalty_z
 
         prox_hat = prox_x_funcs + [_scale_prox_spec(p, rho_k) for p in prox_y_funcs]
