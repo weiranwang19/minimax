@@ -3,7 +3,7 @@ import math
 import torch, tqdm
 from torch.optim import Optimizer
 
-from utils import clone_vals, zero_vals, scale_vals, add_vals, assign_vals, compute_prox, compute_norm
+from utils import clone_vals, zero_vals, scale_vals, add_vals, blend_vals, assign_vals, compute_prox, compute_norm
 
 
 class Minimax_SCSC(Optimizer):
@@ -72,8 +72,6 @@ class Minimax_SCSC(Optimizer):
         assign_vals(self.param_groups[1]["params"], val)
 
     def compute_h_bar_gradient(self, x_val, y_val):
-        x_copy = clone_vals(self.get_x())
-        y_copy = clone_vals(self.get_y())
         self.assign_x(x_val)
         self.assign_y(y_val)
 
@@ -82,9 +80,6 @@ class Minimax_SCSC(Optimizer):
         loss.backward()
         x_grad = self.get_x_grad()
         y_grad = self.get_y_grad()
-
-        self.assign_x(x_copy)
-        self.assign_y(y_copy)
         return x_grad, y_grad
 
     def compute_a_k(self, x_val, y_val, z_g_k, y_g_k, return_h_hat_grad=False):
@@ -295,7 +290,6 @@ def _evaluate_metrics(metrics_func, params_x, params_y):
     return normalized
 
 
-
 def optimize_NCWC(
     params_x,
     params_y,
@@ -339,8 +333,8 @@ def optimize_NCWC(
 
     params_x = list(params_x)
     params_y = list(params_y)
-    x_k = [p.clone().detach() for p in params_x]
-    y_0 = [p.clone().detach() for p in params_y]
+    x_k = clone_vals(params_x)
+    y_0 = clone_vals(params_y)
 
     num_outer_iters = 0
     num_inner_iters = 0
@@ -451,34 +445,31 @@ class SAPD_SCSC(Optimizer):
         https://arxiv.org/pdf/2205.15084
     """
 
-    def __init__(self, params_x, params_y, h_bar, sigma_x, sigma_y, lip, prox_x, prox_y, tau, lr=1, max_iter=1000, verbose=False, log_every=1):
-        if lr < 0.0:
-            raise ValueError(f"Invalid learning rate: {lr}")
-        if tau <= 0.0:
-            raise ValueError(f"Invalid tau: {tau}")
+    def __init__(self, params_x, params_y, h_bar, mu_x, mu_y, lip, prox_x, prox_y, max_iter=1000, verbose=False, log_every=1):
         if max_iter <= 0:
             raise ValueError(f"Invalid max_iter: {max_iter}")
         if log_every <= 0:
             raise ValueError(f"Invalid log_every: {log_every}")
 
-        defaults = dict(lr=lr)
+        defaults = {}
         super().__init__([{"params": params_x}, {"params": params_y}], defaults)
         if len(self.param_groups) != 2:
-            raise ValueError("Minimax_SCSC expects exactly two parameter groups")
+            raise ValueError("SAPD_SCSC expects exactly two parameter groups")
 
         self.h_bar = h_bar
-        self.sigma_x = sigma_x
-        self.sigma_y = sigma_y
+        self.mu_x = mu_x
+        self.mu_y = mu_y
         self.lip = lip
-        self.max_iter = max_iter
         self.prox_x = prox_x
         self.prox_y = prox_y
         self.verbose = verbose
         self.log_every = log_every
-        # step sizes
-        self.sigma = xx
-        self.tau = tau
-        self.theta = yy
+
+        self.sigma =  1 / lip
+        self.tau = 1 / lip
+        self.theta = 1
+        theoretical_num_iter = 33 * max(4/(mu_x * self.tau), 8 / (mu_y * self.sigma))
+        self.max_iter = int( min(max_iter, theoretical_num_iter) )
 
     def get_x(self):
         return self.param_groups[0]["params"]
@@ -486,9 +477,15 @@ class SAPD_SCSC(Optimizer):
     def get_y(self):
         return self.param_groups[1]["params"]
 
+    @torch.no_grad()
+    def assign_x(self, val):
+        assign_vals(self.param_groups[0]["params"], val)
+
+    @torch.no_grad()
+    def assign_y(self, val):
+        assign_vals(self.param_groups[1]["params"], val)
+
     def compute_h_and_gradient(self, x_val, y_val, var='x'):
-        x_copy = clone_vals(self.get_x())
-        y_copy = clone_vals(self.get_y())
         self.assign_x(x_val)
         self.assign_y(y_val)
 
@@ -497,26 +494,44 @@ class SAPD_SCSC(Optimizer):
             output_grad = torch.autograd.grad(loss, self.get_x(), allow_unused=True)
         else:
             output_grad = torch.autograd.grad(loss, self.get_y(), allow_unused=True)
-
-        self.assign_x(x_copy)
-        self.assign_y(y_copy)
-        return loss, output_grad
+        return loss, [p.detach() for p in output_grad]
 
     def run(self):
         x_k = clone_vals(self.get_x())
         y_k = clone_vals(self.get_y())
         q_k = zero_vals(self.get_y())
+        print(f"k={0}: x_k={x_k}, y_k={y_k}")
+
+        x_output = clone_vals(x_k)
+        y_output = clone_vals(y_k)
 
         for k in range(self.max_iter):
+            # line 5
             grad_y = self.compute_h_and_gradient(x_k, y_k, var='y')
-            s_k = add_vals(s_k, scale_vals(q_k, self.theta))
+            s_k = add_vals(grad_y, scale_vals(q_k, self.theta))
 
+            # line 6
             y_kp1 = add_vals(y_k, scale_vals(s_k, self.sigma))
             y_kp1 = compute_prox(y_kp1, self.prox_y, self.sigma)
 
+            # line 7
             _, grad_x = self.compute_h_and_gradient(x_k, y_kp1, var='x')
             x_kp1 = add_vals(x_k, scale_vals(grad_x, - self.tau))
             x_kp1 = compute_prox(x_kp1, self.prox_x, self.tau)
 
+            # line 8
             _, grad_y_kp1 = self.compute_h_and_gradient(x_kp1, y_kp1, var='y')
-            q_k = add_vals(grad_y, scale_vals(grad_y, -1))
+            q_k = add_vals(grad_y_kp1, scale_vals(grad_y, -1))
+            x_k = x_kp1
+            y_k = y_kp1
+            print(f"k={k}: x_kp1={x_kp1}, y_kp1={y_kp1}")
+
+            # Compute running average.
+            N = k+1
+            x_output = blend_vals(x_output, x_kp1, N / (N+1), 1 / (N+1))
+            y_output = blend_vals(y_output, y_kp1, N / (N+1), 1 / (N+1))
+            print(f"k={k}: x_output={x_output}, y_output={y_output}")
+
+        # add metrics here.
+        self.assign_x(x_output)
+        self.assign_y(y_output)
