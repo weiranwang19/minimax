@@ -243,7 +243,8 @@ def optimize_bilevel_contrained_fop_practical(
         unit="outer iter",
         disable=outer_desc is None,
     ):
-        rho_k = base_rho ** (k - 1)
+        # TODO: following original paper, we should use k-1, but it contradicts epsilon constraint in pseudocode
+        rho_k = base_rho ** (k + 1)
         mu_k = rho_k ** 2
         epsilon_k = 1.0 / rho_k
 
