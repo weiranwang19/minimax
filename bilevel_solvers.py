@@ -560,7 +560,7 @@ def optimize_bilevel_constrained_minimax(
         upper_smooth,
         lower_smooth,
         lower_constraints,
-        lagrange_bound,  # TODO: bound of Lagrange multipliers from strong Slater's condition.
+        lagrange_bound,
         prox_x,
         prox_y1,
         D_y,
@@ -575,6 +575,7 @@ def optimize_bilevel_constrained_minimax(
         verbose=False,
         log_every=1,
         objective_func=None,
+        metrics_func=None,
         progress_callback=None,
 ):
     """
@@ -583,6 +584,10 @@ def optimize_bilevel_constrained_minimax(
     Using the Lagrangian formulation of the lower level problem, we solve only one instance of NCWC problem.
     """
 
+    if epsilon <= 0:
+        raise ValueError(f"Invalid epsilon: {epsilon}")
+    if lagrange_bound <= 0:
+        raise ValueError(f"Invalid lagrange_bound: {lagrange_bound}")
     if D_y <= 0:
         raise ValueError(f"Invalid D_y: {D_y}")
     if log_every <= 0:
@@ -608,15 +613,12 @@ def optimize_bilevel_constrained_minimax(
     params_y2 = [torch.zeros_like(tmp).requires_grad_(True)]
     # The copy of y2.
     params_z2 = [torch.zeros_like(tmp).requires_grad_(True)]
-
+    # import pdb; pdb.set_trace()
     # prox operators for y2 and z2.
     def prox_lagrange_multipliers(v, coeff):
         del coeff
-        # Lagrange multipliers are non-negative.
-        v = torch.maximum(v, 0.0)
-        # Box constrains from Strong Slater condition.
-        v = torch.minimum(v, lagrange_bound)
-        return v
+        # Lagrange multipliers are box-constrained by the assumed dual bound.
+        return torch.clamp(v, min=0.0, max=float(lagrange_bound))
 
     def h_lagrangian():
         upper_term = upper_smooth(params_x, params_y1)
@@ -635,15 +637,14 @@ def optimize_bilevel_constrained_minimax(
     ) + [_scale_prox_spec(prox_lagrange_multipliers, rho)]
     prox_z1_z2 = _expand_prox_spec(_scale_prox_spec(prox_y1, rho), len(params_z1)) + [_scale_prox_spec(prox_lagrange_multipliers, rho)]
     ncwc_objective = _adapt_ncwc_objective(objective_func, len(params_x), len(params_y1))
+    ncwc_metrics = _adapt_ncwc_metrics(metrics_func, len(params_x), len(params_y1))
 
+    # 2*c*rho where c is a tuning parameter for lip, c is the best
     lip_h = (
             L_grad_f1
-            + 2 * rho * (L_grad_ftilde1 + L_gtilde + torch.sqrt(num_constraints) * lagrange_bound * L_grad_gtilde)
+            + 2 * 10.0 * rho * (L_grad_ftilde1 + L_gtilde + math.sqrt(num_constraints) * lagrange_bound * L_grad_gtilde)
     )
 
-    # TODO: given we do not have additional outside loop, we have to monitor the progress by extracting progress from
-    # the optimize_NCWC procedure.
-    # Insert metric function, f(x,y_1), ~g(x,y1), ~f(x,y1)-~f*(x)
     solver_stats = optimize_NCWC(
         params_x + params_y1 + params_y2,
         params_z1 + params_z2,
@@ -659,13 +660,14 @@ def optimize_bilevel_constrained_minimax(
         verbose=verbose,
         log_every=log_every,
         objective_func=ncwc_objective,
+        metrics_func=ncwc_metrics,
         progress_callback=progress_callback,
     )
 
-    # TODO: Monitor feasibility of lower level constraint, suboptimality of lower level, obj value.
-
     return {
         "z_eps": clone_vals(params_z1),
+        "lambda_eps": clone_vals(params_y2)[0],
+        "z_lambda_eps": clone_vals(params_z2)[0],
         "rho": rho,
         "epsilon_0": epsilon_0,
         "solver_stats": solver_stats,

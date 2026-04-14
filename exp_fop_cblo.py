@@ -9,6 +9,7 @@ from scipy.optimize import linprog
 
 from utils import clone_vals
 from bilevel_solvers import (
+    optimize_bilevel_constrained_minimax,
     optimize_bilevel_constrained_smo,
     optimize_bilevel_contrained_fop_practical,
 )
@@ -21,7 +22,7 @@ torch.set_default_dtype(torch.float64)
 # PROBLEM_SIZES = [(100 * k, 100 * k, 5 * k) for k in range(1, 11)]
 PROBLEM_SIZES = [(400, 400, 20)]
 NUM_INSTANCES = 1
-SOLVER_METHOD = "fop"
+SOLVER_METHOD = "gcmo"
 # FOP
 BASE_RHO = 5.0
 FINAL_EPS = 1e-2
@@ -32,6 +33,11 @@ ALG4_MAX_ITERS = 200
 SMO_EPS = 1e-2
 SMO_EPSILON_0 = 1.0
 SMO_TAU = 0.8
+
+# GCMO
+GCMO_EPS = 1e-2
+GCMO_MAX_ITERS = 200
+GCMO_LAGRANGE_BOUND = 2000.0
 
 # Common
 FEAS_TOL = 1e-2
@@ -89,6 +95,26 @@ SMO_STAGE_METRICS = (
     "smo/post/z_lower_gap",
     "smo/post/yz_distance",
 )
+GCMO_STAGE_METRICS = (
+    "gcmo/stage/rho",
+    "gcmo/stage/epsilon",
+    "gcmo/stage/epsilon_0",
+    "gcmo/subproblem/num_outer_iters",
+    "gcmo/subproblem/num_inner_iters",
+    "gcmo/subproblem/final_diff",
+    "gcmo/subproblem/terminated",
+    "gcmo/post/upper_obj",
+    "gcmo/post/y_feas",
+    "gcmo/post/y_lower_gap",
+    "gcmo/post/z_feas",
+    "gcmo/post/z_lower_gap",
+    "gcmo/post/yz_distance",
+    "gcmo/post/lambda_norm",
+    "gcmo/post/z_lambda_norm",
+    "gcmo/post/lambda_distance",
+    "gcmo/post/lambda_touched_bound",
+    "gcmo/post/z_lambda_touched_bound",
+)
 
 # Global state placeholders for the current problem instance and iteration
 N = None
@@ -139,6 +165,9 @@ def _configure_run_metrics(run):
     run.define_metric("smo/stage/index")
     for metric_name in SMO_STAGE_METRICS:
         run.define_metric(metric_name, step_metric="smo/stage/index")
+    run.define_metric("gcmo/stage/index")
+    for metric_name in GCMO_STAGE_METRICS:
+        run.define_metric(metric_name, step_metric="gcmo/stage/index")
 
 
 def init_instance_run(problem_size, instance_idx):
@@ -162,6 +191,9 @@ def init_instance_run(problem_size, instance_idx):
         "smo_epsilon_0": SMO_EPSILON_0,
         "smo_tau": SMO_TAU,
         "smo_subproblem_max_iters": SMO_SUBPROBLEM_MAX_ITERS,
+        "gcmo_eps": GCMO_EPS,
+        "gcmo_max_iters": GCMO_MAX_ITERS,
+        "gcmo_lagrange_bound": GCMO_LAGRANGE_BOUND,
     }
     run = wandb.init(
         project=WANDB_PROJECT,
@@ -301,6 +333,10 @@ def compute_d_y():
     return 2.0 * math.sqrt(M)
 
 
+def compute_gcmo_d_y(lagrange_bound):
+    return math.sqrt(4.0 * M + (float(lagrange_bound) ** 2) * L)
+
+
 def _instance_seed(problem_size, instance_idx):
     seed = int(SEED) % (2 ** 63 - 1)
     for value in (*problem_size, instance_idx):
@@ -415,6 +451,34 @@ def build_smo_diagnostics(x_vec, y_vec, z_vec, solver_result):
             }
         )
 
+    return diagnostics
+
+
+def build_gcmo_diagnostics(x_vec, y_vec, z_vec, lambda_vec, z_lambda_vec, solver_result, lagrange_bound):
+    lower_star = solve_lower_level_value(x_vec)
+    y_metrics = _evaluate_lower_candidate(x_vec, y_vec, lower_star)
+    z_metrics = _evaluate_lower_candidate(x_vec, z_vec, lower_star)
+    solver_stats = solver_result["solver_stats"]
+    bound_tol = 1e-10
+    diagnostics = {
+        "upper_obj": upper_objective(x_vec, y_vec),
+        "y_feas": y_metrics["feas"],
+        "y_lower_obj": y_metrics["lower_obj"],
+        "y_lower_gap": y_metrics["lower_gap"],
+        "z_feas": z_metrics["feas"],
+        "z_lower_obj": z_metrics["lower_obj"],
+        "z_lower_gap": z_metrics["lower_gap"],
+        "yz_distance": _vector_distance(y_vec, z_vec),
+        "lambda_norm": float(torch.linalg.vector_norm(lambda_vec).item()),
+        "z_lambda_norm": float(torch.linalg.vector_norm(z_lambda_vec).item()),
+        "lambda_distance": _vector_distance(lambda_vec, z_lambda_vec),
+        "lambda_touched_bound": float(torch.any(lambda_vec >= lagrange_bound - bound_tol).item()),
+        "z_lambda_touched_bound": float(torch.any(z_lambda_vec >= lagrange_bound - bound_tol).item()),
+        "subproblem_num_outer_iters": solver_stats["num_outer_iters"],
+        "subproblem_num_inner_iters": solver_stats["num_inner_iters"],
+        "subproblem_final_diff": solver_stats["final_diff"],
+        "subproblem_terminated": float(solver_stats["terminated"]),
+    }
     return diagnostics
 
 
@@ -796,11 +860,218 @@ def run_single_instance_smo(instance_idx, problem_size):
         raise
 
 
+def run_single_instance_gcmo(instance_idx, problem_size):
+    """Run one GCMO solve for the current random instance."""
+    run = init_instance_run(problem_size, instance_idx)
+    start_time = time.perf_counter()
+    run_finished = False
+    initial_x = torch.zeros(N)
+    initial_y = Y_HAT.clone()
+    initial_objective = upper_objective(initial_x, initial_y)
+    log_history(run, {"instance/initial_objective": initial_objective})
+    gtilde_hi = compute_gtilde_hi()
+    d_y = compute_gcmo_d_y(GCMO_LAGRANGE_BOUND)
+    ncwc_state = {
+        "base_scsc_inner_iters": 0,
+        "ncwc_call_index": 0,
+    }
+    ncwc_progress_callback = build_ncwc_progress_logger(run, ncwc_state)
+
+    def evaluate_ncwc_iterate(x_vals, y_vals):
+        x_curr = x_vals[0]
+        y_curr = y_vals[0]
+        if torch.any(torch.abs(x_curr) > 1.0 + 1e-10):
+            raise RuntimeError("GCMO iterate x left the box constraints")
+        if torch.any(torch.abs(y_curr) > 1.0 + 1e-10):
+            raise RuntimeError("GCMO iterate y left the box constraints")
+        lower_star = solve_lower_level_value(x_curr)
+        return {
+            "upper_obj": upper_objective(x_curr, y_curr),
+            "feas": feasibility_norm(x_curr, y_curr),
+            "lower_gap": lower_objective(x_curr, y_curr) - lower_star,
+        }
+
+    try:
+        x_tensor = initial_x.clone().requires_grad_(True)
+        y_tensor = initial_y.clone().requires_grad_(True)
+        solver_result = optimize_bilevel_constrained_minimax(
+            [x_tensor],
+            [y_tensor],
+            upper_smooth,
+            lower_smooth,
+            lower_constraints,
+            lagrange_bound=GCMO_LAGRANGE_BOUND,
+            prox_x=prox_box,
+            prox_y1=prox_box,
+            D_y=d_y,
+            L_grad_f1=0.0,
+            L_grad_ftilde1=0.0,
+            L_grad_gtilde=0.0,
+            L_gtilde=CURRENT_L_G,
+            gtilde_hi=gtilde_hi,
+            epsilon=GCMO_EPS,
+            max_iter=GCMO_MAX_ITERS,
+            verbose=VERBOSE,
+            log_every=SOLVER_LOG_EVERY,
+            objective_func=upper_smooth,
+            metrics_func=evaluate_ncwc_iterate,
+            progress_callback=ncwc_progress_callback,
+        )
+
+        x_final = x_tensor.detach().clone()
+        y_final = y_tensor.detach().clone()
+        z_final = solver_result["z_eps"][0]
+        lambda_final = solver_result["lambda_eps"]
+        z_lambda_final = solver_result["z_lambda_eps"]
+        if torch.any(torch.abs(x_final) > 1.0 + 1e-10):
+            raise RuntimeError("GCMO iterate x left the box constraints")
+        if torch.any(torch.abs(y_final) > 1.0 + 1e-10):
+            raise RuntimeError("GCMO iterate y left the box constraints")
+        if torch.any(torch.abs(z_final) > 1.0 + 1e-10):
+            raise RuntimeError("GCMO auxiliary iterate z left the box constraints")
+        if torch.any(lambda_final < -1e-10) or torch.any(lambda_final > GCMO_LAGRANGE_BOUND + 1e-10):
+            raise RuntimeError("GCMO iterate lambda left the dual box constraints")
+        if torch.any(z_lambda_final < -1e-10) or torch.any(z_lambda_final > GCMO_LAGRANGE_BOUND + 1e-10):
+            raise RuntimeError("GCMO auxiliary iterate z_lambda left the dual box constraints")
+
+        diagnostics = build_gcmo_diagnostics(
+            x_final,
+            y_final,
+            z_final,
+            lambda_final,
+            z_lambda_final,
+            solver_result,
+            GCMO_LAGRANGE_BOUND,
+        )
+        log_stage(
+            run,
+            {
+                "gcmo/stage/index": 0,
+                "gcmo/stage/rho": solver_result["rho"],
+                "gcmo/stage/epsilon": GCMO_EPS,
+                "gcmo/stage/epsilon_0": solver_result["epsilon_0"],
+                "gcmo/subproblem/num_outer_iters": diagnostics["subproblem_num_outer_iters"],
+                "gcmo/subproblem/num_inner_iters": diagnostics["subproblem_num_inner_iters"],
+                "gcmo/subproblem/final_diff": diagnostics["subproblem_final_diff"],
+                "gcmo/subproblem/terminated": diagnostics["subproblem_terminated"],
+                "gcmo/post/upper_obj": diagnostics["upper_obj"],
+                "gcmo/post/y_feas": diagnostics["y_feas"],
+                "gcmo/post/y_lower_gap": diagnostics["y_lower_gap"],
+                "gcmo/post/z_feas": diagnostics["z_feas"],
+                "gcmo/post/z_lower_gap": diagnostics["z_lower_gap"],
+                "gcmo/post/yz_distance": diagnostics["yz_distance"],
+                "gcmo/post/lambda_norm": diagnostics["lambda_norm"],
+                "gcmo/post/z_lambda_norm": diagnostics["z_lambda_norm"],
+                "gcmo/post/lambda_distance": diagnostics["lambda_distance"],
+                "gcmo/post/lambda_touched_bound": diagnostics["lambda_touched_bound"],
+                "gcmo/post/z_lambda_touched_bound": diagnostics["z_lambda_touched_bound"],
+            },
+            step=0,
+        )
+
+        if VERBOSE:
+            print(
+                f"  Instance {instance_idx + 1}: gcmo_outer={diagnostics['subproblem_num_outer_iters']} "
+                f"y_feas={diagnostics['y_feas']:.3e} y_gap={diagnostics['y_lower_gap']:.3e} "
+                f"z_feas={diagnostics['z_feas']:.3e} z_gap={diagnostics['z_lower_gap']:.3e} "
+                f"yz_dist={diagnostics['yz_distance']:.3e} "
+                f"lambda_norm={diagnostics['lambda_norm']:.3e} "
+                f"z_lambda_norm={diagnostics['z_lambda_norm']:.3e} "
+                f"lambda_dist={diagnostics['lambda_distance']:.3e} "
+                f"upper={diagnostics['upper_obj']:.3e}",
+                flush=True,
+            )
+
+        elapsed = time.perf_counter() - start_time
+        if diagnostics["y_feas"] > FEAS_TOL or diagnostics["y_lower_gap"] > LOWER_GAP_TOL:
+            failure_summary = {
+                "instance/failed": 1.0,
+                "instance/initial_objective": initial_objective,
+                "instance/final_objective": diagnostics["upper_obj"],
+                "instance/num_outer_iters": diagnostics["subproblem_num_outer_iters"],
+                "instance/final_feas": diagnostics["y_feas"],
+                "instance/final_lower_gap": diagnostics["y_lower_gap"],
+                "instance/elapsed_sec": elapsed,
+                "instance/final_z_feas": diagnostics["z_feas"],
+                "instance/final_z_lower_gap": diagnostics["z_lower_gap"],
+                "instance/final_yz_distance": diagnostics["yz_distance"],
+                "instance/final_lambda_norm": diagnostics["lambda_norm"],
+                "instance/final_z_lambda_norm": diagnostics["z_lambda_norm"],
+                "instance/final_lambda_distance": diagnostics["lambda_distance"],
+                "instance/final_lambda_touched_bound": diagnostics["lambda_touched_bound"],
+                "instance/final_z_lambda_touched_bound": diagnostics["z_lambda_touched_bound"],
+                "instance/subproblem_num_outer_iters": diagnostics["subproblem_num_outer_iters"],
+                "instance/subproblem_num_inner_iters": diagnostics["subproblem_num_inner_iters"],
+                "instance/subproblem_final_diff": diagnostics["subproblem_final_diff"],
+                "instance/subproblem_terminated": diagnostics["subproblem_terminated"],
+            }
+            finish_instance_run(run, failure_summary)
+            run_finished = True
+            raise RuntimeError(
+                f"Instance {instance_idx + 1} GCMO solve failed the stop check: "
+                f"y_feas={diagnostics['y_feas']:.3e}, y_gap={diagnostics['y_lower_gap']:.3e}, "
+                f"z_feas={diagnostics['z_feas']:.3e}, z_gap={diagnostics['z_lower_gap']:.3e}, "
+                f"lambda_norm={diagnostics['lambda_norm']:.3e}, "
+                f"z_lambda_norm={diagnostics['z_lambda_norm']:.3e}, "
+                f"lambda_dist={diagnostics['lambda_distance']:.3e}, "
+                f"subproblem_terminated={int(diagnostics['subproblem_terminated'])}, "
+                f"subproblem_outer={diagnostics['subproblem_num_outer_iters']}, "
+                f"subproblem_diff={diagnostics['subproblem_final_diff']}"
+            )
+
+        result = {
+            "initial_objective": initial_objective,
+            "final_objective": diagnostics["upper_obj"],
+            "num_outer_iters": diagnostics["subproblem_num_outer_iters"],
+            "final_feas": diagnostics["y_feas"],
+            "final_lower_gap": diagnostics["y_lower_gap"],
+            "gcmo_diagnostics": diagnostics,
+        }
+        finish_instance_run(
+            run,
+            {
+                "instance/initial_objective": result["initial_objective"],
+                "instance/final_objective": result["final_objective"],
+                "instance/num_outer_iters": result["num_outer_iters"],
+                "instance/final_feas": result["final_feas"],
+                "instance/final_lower_gap": result["final_lower_gap"],
+                "instance/elapsed_sec": elapsed,
+                "instance/final_z_feas": diagnostics["z_feas"],
+                "instance/final_z_lower_gap": diagnostics["z_lower_gap"],
+                "instance/final_yz_distance": diagnostics["yz_distance"],
+                "instance/final_lambda_norm": diagnostics["lambda_norm"],
+                "instance/final_z_lambda_norm": diagnostics["z_lambda_norm"],
+                "instance/final_lambda_distance": diagnostics["lambda_distance"],
+                "instance/final_lambda_touched_bound": diagnostics["lambda_touched_bound"],
+                "instance/final_z_lambda_touched_bound": diagnostics["z_lambda_touched_bound"],
+                "instance/subproblem_num_outer_iters": diagnostics["subproblem_num_outer_iters"],
+                "instance/subproblem_num_inner_iters": diagnostics["subproblem_num_inner_iters"],
+                "instance/subproblem_final_diff": diagnostics["subproblem_final_diff"],
+                "instance/subproblem_terminated": diagnostics["subproblem_terminated"],
+            },
+        )
+        run_finished = True
+        return result
+    except Exception:
+        if not run_finished:
+            finish_instance_run(
+                run,
+                {
+                    "instance/failed": 1.0,
+                    "instance/initial_objective": initial_objective,
+                    "instance/elapsed_sec": time.perf_counter() - start_time,
+                },
+            )
+        raise
+
+
 def run_single_instance(instance_idx, problem_size):
     if SOLVER_METHOD == "fop":
         return run_single_instance_fop(instance_idx, problem_size)
     if SOLVER_METHOD == "smo":
         return run_single_instance_smo(instance_idx, problem_size)
+    if SOLVER_METHOD == "gcmo":
+        return run_single_instance_gcmo(instance_idx, problem_size)
     raise ValueError(f"Unknown SOLVER_METHOD: {SOLVER_METHOD}")
 
 
