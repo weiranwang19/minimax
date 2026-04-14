@@ -3,7 +3,7 @@ import math
 import torch, tqdm
 from torch.optim import Optimizer
 
-from utils import clone_vals, scale_vals, add_vals, assign_vals, compute_prox, compute_norm
+from utils import clone_vals, zero_vals, scale_vals, add_vals, assign_vals, compute_prox, compute_norm
 
 
 class Minimax_SCSC(Optimizer):
@@ -78,11 +78,6 @@ class Minimax_SCSC(Optimizer):
     @torch.no_grad()
     def assign_y(self, val):
         assign_vals(self.param_groups[1]["params"], val)
-
-
-    @torch.no_grad()
-    def add_vals(self, vals1, vals2):
-        return [a + b for a, b in zip(vals1, vals2)]
 
     def compute_h_bar_gradient(self, x_val, y_val):
         x_copy = self.get_x_copy()
@@ -456,3 +451,52 @@ def optimize_NCWC(
         "final_diff": final_diff,
         "terminated": terminated,
     }
+
+
+class SAPD_SCSC(Optimizer):
+    """
+    Algorithm 1 of SAPD+:
+        https://arxiv.org/pdf/2205.15084
+    """
+
+    def __init__(self, params_x, params_y, h_bar, sigma_x, sigma_y, lip, prox_x, prox_y, tau, lr=1, max_iter=1000, verbose=False, log_every=1):
+        if lr < 0.0:
+            raise ValueError(f"Invalid learning rate: {lr}")
+        if tau <= 0.0:
+            raise ValueError(f"Invalid tau: {tau}")
+        if max_iter <= 0:
+            raise ValueError(f"Invalid max_iter: {max_iter}")
+        if log_every <= 0:
+            raise ValueError(f"Invalid log_every: {log_every}")
+
+        defaults = dict(lr=lr)
+        super().__init__([{"params": params_x}, {"params": params_y}], defaults)
+        if len(self.param_groups) != 2:
+            raise ValueError("Minimax_SCSC expects exactly two parameter groups")
+
+        self.h_bar = h_bar
+        self.sigma_x = sigma_x
+        self.sigma_y = sigma_y
+        self.lip = lip
+        self.max_iter = max_iter
+        self.prox_x = prox_x
+        self.prox_y = prox_y
+        self.verbose = verbose
+        self.log_every = log_every
+        # step sizes
+        self.sigma = xx
+        self.tau = tau
+        self.theta = yy
+
+    def get_x(self):
+        return self.param_groups[0]["params"]
+
+    def get_y(self):
+        return self.param_groups[1]["params"]
+
+    def run(self):
+        q_0 = zero_vals(self.get_y())
+
+        for k in range(self.max_iter):
+
+

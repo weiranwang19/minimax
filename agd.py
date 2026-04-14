@@ -1,17 +1,7 @@
 import math
 import torch
 
-from utils import clone_vals, add_vals, scale_vals, blend_vals, compute_prox
-
-
-def _compute_value_and_grad(values, func):
-    working = clone_vals(values, requires_grad=True)
-    loss = func(working)
-    grads = torch.autograd.grad(loss, working, allow_unused=True)
-    detached_grads = []
-    for v, g in zip(working, grads):
-        detached_grads.append(torch.zeros_like(v) if g is None else g.detach())
-    return loss.detach(), detached_grads
+from utils import clone_vals, add_vals, scale_vals, blend_vals, compute_prox, compute_value_and_grad
 
 
 def _iteration_bound(D_y, L_grad_phi, epsilon):
@@ -61,7 +51,7 @@ def agd_convex(
     if L_grad_phi > 0:
         for k in range(num_iters):
             y_k = blend_vals(x_k, z_k, k / (k + 2), 2.0 / (k + 2))
-            _, grad_y = _compute_value_and_grad(y_k, phi_func)
+            _, grad_y = compute_value_and_grad(y_k, phi_func)
             prox_coeff = (k + 2) / (2.0 * L_grad_phi)
             # essentially prox_arg = z_k - prox_coeff * grad_y
             prox_arg = add_vals(z_k, scale_vals(grad_y, -prox_coeff))
