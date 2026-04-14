@@ -56,14 +56,6 @@ class Minimax_SCSC(Optimizer):
         return self.param_groups[1]["params"]
 
     @torch.no_grad()
-    def get_x_copy(self):
-        return clone_vals(self.get_x())
-
-    @torch.no_grad()
-    def get_y_copy(self):
-        return clone_vals(self.get_y())
-
-    @torch.no_grad()
     def get_x_grad(self):
         return [p.grad for p in self.get_x()]
 
@@ -80,8 +72,8 @@ class Minimax_SCSC(Optimizer):
         assign_vals(self.param_groups[1]["params"], val)
 
     def compute_h_bar_gradient(self, x_val, y_val):
-        x_copy = self.get_x_copy()
-        y_copy = self.get_y_copy()
+        x_copy = clone_vals(self.get_x())
+        y_copy = clone_vals(self.get_y())
         self.assign_x(x_val)
         self.assign_y(y_val)
 
@@ -114,8 +106,8 @@ class Minimax_SCSC(Optimizer):
         return a_x_k, a_y_k
 
     def run(self):
-        z_k = z_f_k = scale_vals(self.get_x_copy(), -self.sigma_x)
-        y_k = y_f_k = self.get_y_copy()
+        z_k = z_f_k = scale_vals(clone_vals(self.get_x()), -self.sigma_x)
+        y_k = y_f_k = clone_vals(self.get_y())
 
         num_outer_iters = 0
         num_inner_iters = 0
@@ -494,9 +486,37 @@ class SAPD_SCSC(Optimizer):
     def get_y(self):
         return self.param_groups[1]["params"]
 
+    def compute_h_and_gradient(self, x_val, y_val, var='x'):
+        x_copy = clone_vals(self.get_x())
+        y_copy = clone_vals(self.get_y())
+        self.assign_x(x_val)
+        self.assign_y(y_val)
+
+        loss = self.h_bar()
+        if var=='x':
+            output_grad = torch.autograd.grad(loss, self.get_x(), allow_unused=True)
+        else:
+            output_grad = torch.autograd.grad(loss, self.get_y(), allow_unused=True)
+
+        self.assign_x(x_copy)
+        self.assign_y(y_copy)
+        return loss, output_grad
+
     def run(self):
-        q_0 = zero_vals(self.get_y())
+        x_k = clone_vals(self.get_x())
+        y_k = clone_vals(self.get_y())
+        q_k = zero_vals(self.get_y())
 
         for k in range(self.max_iter):
+            grad_y = self.compute_h_and_gradient(x_k, y_k, var='y')
+            s_k = add_vals(s_k, scale_vals(q_k, self.theta))
 
+            y_kp1 = add_vals(y_k, scale_vals(s_k, self.sigma))
+            y_kp1 = compute_prox(y_kp1, self.prox_y, self.sigma)
 
+            _, grad_x = self.compute_h_and_gradient(x_k, y_kp1, var='x')
+            x_kp1 = add_vals(x_k, scale_vals(grad_x, - self.tau))
+            x_kp1 = compute_prox(x_kp1, self.prox_x, self.tau)
+
+            _, grad_y_kp1 = self.compute_h_and_gradient(x_kp1, y_kp1, var='y')
+            q_k = add_vals(grad_y, scale_vals(grad_y, -1))
