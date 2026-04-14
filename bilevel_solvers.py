@@ -637,9 +637,7 @@ def optimize_bilevel_constrained_minimax(
 
     lip_h = (
             L_grad_f1
-            + 2 * rho * L_grad_ftilde1
-            # TODO: it is best to tune another parameter in place of torch.sqrt(num_constraints) * lagrange_bound * L_grad_gtilde
-            + L_gtilde + torch.sqrt(num_constraints) * lagrange_bound * L_grad_gtilde
+            + 2 * rho * (L_grad_ftilde1 + L_gtilde + torch.sqrt(num_constraints) * lagrange_bound * L_grad_gtilde)
     )
 
     # TODO: given we do not have additional outside loop, we have to monitor the progress by extracting progress from
