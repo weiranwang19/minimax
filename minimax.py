@@ -290,6 +290,107 @@ def _evaluate_metrics(metrics_func, params_x, params_y):
     return normalized
 
 
+class SAPD_SCSC(Optimizer):
+    """
+    Algorithm 1 of SAPD+:
+        https://arxiv.org/pdf/2205.15084
+    """
+
+    def __init__(self, params_x, params_y, h_bar, mu_x, mu_y, lip, prox_x, prox_y, max_iter=1000, verbose=False, log_every=1):
+        if max_iter <= 0:
+            raise ValueError(f"Invalid max_iter: {max_iter}")
+        if log_every <= 0:
+            raise ValueError(f"Invalid log_every: {log_every}")
+
+        defaults = {}
+        super().__init__([{"params": params_x}, {"params": params_y}], defaults)
+        if len(self.param_groups) != 2:
+            raise ValueError("SAPD_SCSC expects exactly two parameter groups")
+
+        self.h_bar = h_bar
+        self.mu_x = mu_x
+        self.mu_y = mu_y
+        self.lip = lip
+        self.prox_x = prox_x
+        self.prox_y = prox_y
+        self.verbose = verbose
+        self.log_every = log_every
+
+        self.sigma =  1 / lip
+        self.tau = 1 / lip
+        self.theta = 1
+        theoretical_num_iter = 33 * max(4/(mu_x * self.tau), 8 / (mu_y * self.sigma))
+        theoretical_num_iter = int( max(theoretical_num_iter, 1) )
+        self.max_iter = int( min(max_iter, theoretical_num_iter) )
+        print(f"theoretical_num_iter={theoretical_num_iter}, max_iter={self.max_iter}")
+
+    def get_x(self):
+        return self.param_groups[0]["params"]
+
+    def get_y(self):
+        return self.param_groups[1]["params"]
+
+    @torch.no_grad()
+    def assign_x(self, val):
+        assign_vals(self.param_groups[0]["params"], val)
+
+    @torch.no_grad()
+    def assign_y(self, val):
+        assign_vals(self.param_groups[1]["params"], val)
+
+    def compute_h_and_gradient(self, x_val, y_val, var='x'):
+        self.assign_x(x_val)
+        self.assign_y(y_val)
+
+        loss = self.h_bar()
+        if var=='x':
+            output_grad = torch.autograd.grad(loss, self.get_x(), allow_unused=True)
+        else:
+            output_grad = torch.autograd.grad(loss, self.get_y(), allow_unused=True)
+        return loss, [p.detach() for p in output_grad]
+
+    def run(self):
+        x_k = clone_vals(self.get_x())
+        y_k = clone_vals(self.get_y())
+        q_k = zero_vals(self.get_y())
+        print(f"k={0}: x_0={x_k}, y_0={y_k}")
+
+        x_output = clone_vals(x_k)
+        y_output = clone_vals(y_k)
+
+        for k in range(self.max_iter):
+            # line 5
+            grad_y = self.compute_h_and_gradient(x_k, y_k, var='y')
+            s_k = add_vals(grad_y, scale_vals(q_k, self.theta))
+
+            # line 6
+            y_kp1 = add_vals(y_k, scale_vals(s_k, self.sigma))
+            y_kp1 = compute_prox(y_kp1, self.prox_y, self.sigma)
+
+            # line 7
+            _, grad_x = self.compute_h_and_gradient(x_k, y_kp1, var='x')
+            x_kp1 = add_vals(x_k, scale_vals(grad_x, - self.tau))
+            x_kp1 = compute_prox(x_kp1, self.prox_x, self.tau)
+
+            # line 8
+            _, grad_y_kp1 = self.compute_h_and_gradient(x_kp1, y_kp1, var='y')
+            q_k = add_vals(grad_y_kp1, scale_vals(grad_y, -1))
+            x_k = x_kp1
+            y_k = y_kp1
+            # print(f"k={k}: x_kp1={x_kp1}, y_kp1={y_kp1}")
+
+            # Compute running average.
+            N = k+1
+            x_output = blend_vals(x_output, x_kp1, N / (N+1), 1 / (N+1))
+            y_output = blend_vals(y_output, y_kp1, N / (N+1), 1 / (N+1))
+
+        # add metrics here.
+        self.assign_x(x_output)
+        self.assign_y(y_output)
+        print(f"k={k}: x_output={x_output}, y_output={y_output}")
+        return {"num_inner_iters": k}
+
+
 def optimize_NCWC(
     params_x,
     params_y,
@@ -300,6 +401,7 @@ def optimize_NCWC(
     prox_y,
     epsilon,
     epsilon_0,
+    sub_routine='deterministic',
     lr=1,
     max_iter=1000,
     verbose=False,
@@ -373,21 +475,38 @@ def optimize_NCWC(
         epsilon_k = epsilon_0 / (k + 1)
         sigma_y = epsilon / (2 * D_y)
         lip_k = 3 * lip_h + epsilon / (2 * D_y)
-        solver = Minimax_SCSC(
-            params_x,
-            params_y,
-            h_alg6,
-            sigma_x=lip_h,
-            sigma_y=sigma_y,
-            lip=lip_k,
-            prox_x=prox_x,
-            prox_y=prox_y,
-            tau=epsilon_k,
-            lr=lr,
-            max_iter=max_iter,
-            verbose=verbose,
-            log_every=log_every,
-        )
+        if sub_routine == 'deterministic':
+            solver = Minimax_SCSC(
+                params_x,
+                params_y,
+                h_alg6,
+                sigma_x=lip_h,
+                sigma_y=sigma_y,
+                lip=lip_k,
+                prox_x=prox_x,
+                prox_y=prox_y,
+                tau=epsilon_k,
+                lr=lr,
+                max_iter=max_iter,
+                verbose=verbose,
+                log_every=log_every,
+            )
+        elif sub_routine == 'stochastic':
+            solver = SAPD_SCSC(
+                params_x,
+                params_y,
+                h_alg6,
+                mu_x=lip_h,
+                mu_y=sigma_y,
+                lip=lip_k,
+                prox_x=prox_x,
+                prox_y=prox_y,
+                max_iter=max_iter,
+                verbose=verbose,
+                log_every=log_every,
+            )
+        else:
+            raise NotImplementedError("This sub_routine is not yet available.")
         solver_stats = solver.run()
 
         x_kp1 = [p.clone().detach() for p in params_x]
@@ -437,101 +556,3 @@ def optimize_NCWC(
         "final_diff": final_diff,
         "terminated": terminated,
     }
-
-
-class SAPD_SCSC(Optimizer):
-    """
-    Algorithm 1 of SAPD+:
-        https://arxiv.org/pdf/2205.15084
-    """
-
-    def __init__(self, params_x, params_y, h_bar, mu_x, mu_y, lip, prox_x, prox_y, max_iter=1000, verbose=False, log_every=1):
-        if max_iter <= 0:
-            raise ValueError(f"Invalid max_iter: {max_iter}")
-        if log_every <= 0:
-            raise ValueError(f"Invalid log_every: {log_every}")
-
-        defaults = {}
-        super().__init__([{"params": params_x}, {"params": params_y}], defaults)
-        if len(self.param_groups) != 2:
-            raise ValueError("SAPD_SCSC expects exactly two parameter groups")
-
-        self.h_bar = h_bar
-        self.mu_x = mu_x
-        self.mu_y = mu_y
-        self.lip = lip
-        self.prox_x = prox_x
-        self.prox_y = prox_y
-        self.verbose = verbose
-        self.log_every = log_every
-
-        self.sigma =  1 / lip
-        self.tau = 1 / lip
-        self.theta = 1
-        theoretical_num_iter = 33 * max(4/(mu_x * self.tau), 8 / (mu_y * self.sigma))
-        self.max_iter = int( min(max_iter, theoretical_num_iter) )
-
-    def get_x(self):
-        return self.param_groups[0]["params"]
-
-    def get_y(self):
-        return self.param_groups[1]["params"]
-
-    @torch.no_grad()
-    def assign_x(self, val):
-        assign_vals(self.param_groups[0]["params"], val)
-
-    @torch.no_grad()
-    def assign_y(self, val):
-        assign_vals(self.param_groups[1]["params"], val)
-
-    def compute_h_and_gradient(self, x_val, y_val, var='x'):
-        self.assign_x(x_val)
-        self.assign_y(y_val)
-
-        loss = self.h_bar()
-        if var=='x':
-            output_grad = torch.autograd.grad(loss, self.get_x(), allow_unused=True)
-        else:
-            output_grad = torch.autograd.grad(loss, self.get_y(), allow_unused=True)
-        return loss, [p.detach() for p in output_grad]
-
-    def run(self):
-        x_k = clone_vals(self.get_x())
-        y_k = clone_vals(self.get_y())
-        q_k = zero_vals(self.get_y())
-        print(f"k={0}: x_k={x_k}, y_k={y_k}")
-
-        x_output = clone_vals(x_k)
-        y_output = clone_vals(y_k)
-
-        for k in range(self.max_iter):
-            # line 5
-            grad_y = self.compute_h_and_gradient(x_k, y_k, var='y')
-            s_k = add_vals(grad_y, scale_vals(q_k, self.theta))
-
-            # line 6
-            y_kp1 = add_vals(y_k, scale_vals(s_k, self.sigma))
-            y_kp1 = compute_prox(y_kp1, self.prox_y, self.sigma)
-
-            # line 7
-            _, grad_x = self.compute_h_and_gradient(x_k, y_kp1, var='x')
-            x_kp1 = add_vals(x_k, scale_vals(grad_x, - self.tau))
-            x_kp1 = compute_prox(x_kp1, self.prox_x, self.tau)
-
-            # line 8
-            _, grad_y_kp1 = self.compute_h_and_gradient(x_kp1, y_kp1, var='y')
-            q_k = add_vals(grad_y_kp1, scale_vals(grad_y, -1))
-            x_k = x_kp1
-            y_k = y_kp1
-            print(f"k={k}: x_kp1={x_kp1}, y_kp1={y_kp1}")
-
-            # Compute running average.
-            N = k+1
-            x_output = blend_vals(x_output, x_kp1, N / (N+1), 1 / (N+1))
-            y_output = blend_vals(y_output, y_kp1, N / (N+1), 1 / (N+1))
-            print(f"k={k}: x_output={x_output}, y_output={y_output}")
-
-        # add metrics here.
-        self.assign_x(x_output)
-        self.assign_y(y_output)
