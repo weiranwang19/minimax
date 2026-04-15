@@ -45,3 +45,20 @@ lip_h = 10
 optimize_NCWC([x], [y], h_ncwc, lip_h, D_y, [prox_bound], [prox_bound], 2e-2, 1e-2, sub_routine='stochastic')
 print(x)
 print(y)
+
+
+
+# Test project_onto_simplex:
+# Test 1: Single vector
+v1 = torch.tensor([1.2, -0.5, 2.0, 0.8])
+p1 = project_onto_simplex(v1)
+print(f"Original: {v1}")
+print(f"Projected: {p1}")
+print(f"Sum: {p1.sum().item():.4f}\n")
+
+# Test 2: Batched tensors (e.g., batch_size=3, classes=4)
+v2 = torch.randn(3, 4)
+p2 = project_onto_simplex(v2, dim=1)
+print(f"Batched Original:\n{v2}")
+print(f"Batched Projected:\n{p2}")
+print(f"Batched Sums: {p2.sum(dim=1)}")
