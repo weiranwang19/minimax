@@ -89,8 +89,8 @@ def optimize_bilevel_constrained_fop(
 
     h_alg4 computes the smooth part.
     """
-    if epsilon <= 0 or epsilon > 0.25:
-        raise ValueError(f"Algorithm 4 requires epsilon in (0, 1/4], got {epsilon}")
+    # if epsilon <= 0 or epsilon > 0.25:
+    #     raise ValueError(f"Algorithm 4 requires epsilon in (0, 1/4], got {epsilon}")
     if D_y <= 0:
         raise ValueError(f"Invalid D_y: {D_y}")
     if log_every <= 0:
@@ -132,6 +132,8 @@ def optimize_bilevel_constrained_fop(
     ncwc_objective = _adapt_ncwc_objective(objective_func, len(params_x), len(params_y))
     ncwc_metrics = _adapt_ncwc_metrics(metrics_func, len(params_x), len(params_y))
 
+
+    # TODO: if lip_h is None, use default value which is to be tuned
     lip_h = (
         L_grad_f1
         + 2 * rho * L_grad_ftilde1
@@ -244,7 +246,7 @@ def optimize_bilevel_contrained_fop_practical(
         disable=outer_desc is None,
     ):
         # TODO: following original paper, we should use k-1, but it contradicts epsilon constraint in pseudocode
-        rho_k = base_rho ** (k + 1)
+        rho_k = base_rho ** (k - 1)
         mu_k = rho_k ** 2
         epsilon_k = 1.0 / rho_k
 
@@ -259,6 +261,7 @@ def optimize_bilevel_contrained_fop_practical(
             penalty = mu_k * positive_part_norm_sq(constraint_z)
             return lower_smooth(params_x, z_vars) + penalty
 
+        # TODO: if L_hat_k is None, use provided initial value * base_rho**k
         L_hat_k = L_grad_ftilde1 + 2.0 * mu_k * (L_gtilde ** 2 + gtilde_hi * L_grad_gtilde)
 
         y_init, warm_start_stats = agd_convex(
@@ -451,6 +454,7 @@ def optimize_bilevel_constrained_smo(
             penalty = positive_part_norm_sq(lambda_k + mu_k * constraint_z) / (2.0 * rho_k * mu_k)
             return lower_smooth(params_x, z_vars) + penalty
 
+        # TODO: if L_hat_k is None, use provided initial value * 1/(tau**{2k})
         L_hat_k = (
             L_grad_ftilde1
             + (mu_k * (L_gtilde ** 2 + gtilde_hi * L_grad_gtilde) + lambda_norm * L_grad_gtilde) / rho_k
@@ -574,7 +578,7 @@ def optimize_bilevel_constrained_minimax(
         max_iter=1000,
         verbose=False,
         log_every=1,
-        objective_func=None,
+        objective_func=None, # TODO: delete
         metrics_func=None,
         progress_callback=None,
 ):
@@ -639,11 +643,12 @@ def optimize_bilevel_constrained_minimax(
     ncwc_objective = _adapt_ncwc_objective(objective_func, len(params_x), len(params_y1))
     ncwc_metrics = _adapt_ncwc_metrics(metrics_func, len(params_x), len(params_y1))
 
-    # 2*c*rho where c is a tuning parameter for lip, c is the best
-    lip_h = (
-            L_grad_f1
-            + 2 * 10.0 * rho * (L_grad_ftilde1 + L_gtilde + math.sqrt(num_constraints) * lagrange_bound * L_grad_gtilde)
-    )
+    # TODO: if none, substitute with constant
+    # lip_h = (
+    #         L_grad_f1
+    #         + 2 * rho * (L_grad_ftilde1 + L_gtilde + math.sqrt(num_constraints) * lagrange_bound * L_grad_gtilde)
+    # )
+    lip_h = 6.0
 
     solver_stats = optimize_NCWC(
         params_x + params_y1 + params_y2,
