@@ -33,6 +33,7 @@ ALG4_MAX_ITERS = 200
 SMO_EPS = 1e-2
 SMO_EPSILON_0 = 1.0
 SMO_TAU = 0.8
+SMO_SUBPROBLEM_MAX_ITERS = 200
 
 # GCMO
 GCMO_EPS = 1e-2
@@ -44,7 +45,6 @@ FEAS_TOL = 1e-2
 LOWER_GAP_TOL = 1e-2
 SEED = 0
 VERBOSE = True
-SMO_SUBPROBLEM_MAX_ITERS = 200
 SOLVER_LOG_EVERY = 1
 WANDB_ENABLED = True
 WANDB_PROJECT = "minimax"
@@ -260,7 +260,6 @@ def build_ncwc_progress_logger(run, ncwc_state):
 
     return callback
 
-
 def finish_instance_run(run, summary):
     if run is None:
         return
@@ -399,7 +398,6 @@ def solve_lower_level_value(x_vec):
         raise RuntimeError(f"Lower-level LP solve failed: {result.message}")
     return float(result.fun)
 
-
 def _vector_distance(u_vec, v_vec):
     return float(torch.linalg.vector_norm(u_vec - v_vec).item())
 
@@ -497,8 +495,7 @@ def run_single_instance_fop(instance_idx, problem_size):
     run_finished = False
 
     x_prev = torch.zeros(N)
-    y_prev = Y_HAT.clone()
-    y_tilde_prev = Y_HAT.clone()
+    y_prev = torch.zeros(M)
     initial_objective = upper_objective(x_prev, y_prev)
     log_history(run, {"instance/initial_objective": initial_objective})
     gtilde_hi = compute_gtilde_hi()
@@ -653,7 +650,7 @@ def run_single_instance_smo(instance_idx, problem_size):
     start_time = time.perf_counter()
     run_finished = False
     initial_x = torch.zeros(N)
-    initial_y = Y_HAT.clone()
+    initial_y = torch.zeros(M)
     initial_objective = upper_objective(initial_x, initial_y)
     log_history(run, {"instance/initial_objective": initial_objective})
     gtilde_hi = compute_gtilde_hi()
