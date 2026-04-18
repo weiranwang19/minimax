@@ -110,7 +110,7 @@ def parse_args():
     parser.add_argument("--rho", type=float, default=1.0)
     parser.add_argument("--eta_init", type=float, default=10.0)
     parser.add_argument("--eta_min", type=float, default=1e-6)
-    parser.add_argument("--solver_lip_h", type=float, default=10000.0)
+    parser.add_argument("--solver_lip_h", type=float, default=1000.0)
     parser.add_argument("--solver_d_y", type=float, default=100.0)
     parser.add_argument("--solver_epsilon", type=float, default=1e-4)
     parser.add_argument("--solver_epsilon_0", type=float, default=1.0)
@@ -118,18 +118,17 @@ def parse_args():
     parser.add_argument("--solver_max_outer_iters", type=int, default=1000)
     parser.add_argument("--solver_inner_max_iters", type=int, default=1000)
     parser.add_argument("--monitor_batches", type=int, default=1)
+    parser.add_argument("--test_eval_every", type=int, default=10)
     parser.add_argument("--log_every", type=int, default=1)
     parser.add_argument("--wandb_mode", default="online", choices=("online", "offline", "disabled"))
     return parser.parse_args()
 
 
-def make_progress_logger(run):
+def make_progress_logger(run, problem, classifier, test_loader, test_eval_every, solver_lip_h):
     def callback(payload):
         step = payload["call_cumulative_scsc_inner_iters"]
         metrics = payload.get("metrics") or {}
         objective = payload.get("objective")
-        config = getattr(run, "config", {})
-        solver_lip_h = config.get("solver_lip_h", float("nan")) if hasattr(config, "get") else float("nan")
         if metrics:
             ensure_finite_metrics(metrics, "NCWC progress", solver_lip_h)
         if objective is not None and not math.isfinite(float(objective)):
@@ -145,8 +144,23 @@ def make_progress_logger(run):
             "ncwc/inner_terminated": float(bool(payload.get("inner_terminated"))),
         }
         log_payload.update(metrics)
-        run.log(log_payload)
         completed_outer_iters = payload.get("completed_outer_iters")
+        test_metrics = None
+        if (
+            test_eval_every > 0
+            and completed_outer_iters is not None
+            and completed_outer_iters > 0
+            and completed_outer_iters % test_eval_every == 0
+        ):
+            test_metrics = problem.evaluate_loader(classifier, test_loader, prefix="test")
+            ensure_finite_metrics(
+                test_metrics,
+                f"test evaluation at outer={completed_outer_iters}",
+                solver_lip_h,
+            )
+            log_payload.update(test_metrics)
+
+        run.log(log_payload)
         if completed_outer_iters is None:
             return
         print(
@@ -158,6 +172,14 @@ def make_progress_logger(run):
             f"diff={payload.get('final_diff')}",
             flush=True,
         )
+        if test_metrics is not None:
+            print(
+                f"test@outer={completed_outer_iters} "
+                f"acc={test_metrics.get('test/accuracy', float('nan')):.4f} "
+                f"worst={test_metrics.get('test/worst_group_accuracy', float('nan')):.4f} "
+                f"loss={test_metrics.get('test/loss', float('nan')):.4f}",
+                flush=True,
+            )
 
     return callback
 
@@ -255,7 +277,14 @@ def main():
         log_every=args.log_every,
         objective_func=problem.monitor_objective,
         metrics_func=problem.monitor_metrics,
-        progress_callback=make_progress_logger(run),
+        progress_callback=make_progress_logger(
+            run,
+            problem,
+            classifier,
+            data_bundle["test_loader"],
+            args.test_eval_every,
+            args.solver_lip_h,
+        ),
     )
 
     final_metrics = problem.monitor_metrics(min_block, max_block)
