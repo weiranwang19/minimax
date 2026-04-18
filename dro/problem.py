@@ -1,3 +1,18 @@
+"""CelebA DRO objective helpers.
+
+Variable mapping to the user's notation:
+    x_1: backbone parameters of the ResNet50 feature extractor
+    y_1: classifier weights applied on top of the frozen feature dimension
+    y_2: train-group simplex weights in the lower-level max problem
+    x_2: val-group simplex weights in the upper-level max problem
+    z_1: copy of the classifier used in the unconstrained reformulation
+    z_2: copy of the train-group simplex used in the unconstrained reformulation
+    eta: learnable scalar coefficient on the train DRO regularizer
+
+The current implementation follows the value-gap reformulation:
+    h = L_V(x_1, y_1, x_2, 0) + rho * (L_T(x_1, y_1, z_2, eta) - L_T(x_1, z_1, y_2, eta))
+"""
+
 from dataclasses import dataclass
 
 import torch
@@ -30,12 +45,19 @@ def simplex_prox(project_onto_simplex):
 
 @dataclass
 class DROBlockView:
+    # x_1: backbone parameters of the ResNet50 feature extractor.
     backbone_params: list
+    # eta: scalar regularizer coefficient in the train DRO objective.
     eta: torch.Tensor
+    # y_1: classifier weights with shape [d, C].
     classifier: torch.Tensor
+    # y_2: train-group simplex weights in the lower-level max problem.
     train_simplex: torch.Tensor
+    # x_2: val-group simplex weights in the upper-level max problem.
     val_simplex: torch.Tensor
+    # z_1: copy of the classifier used by the unconstrained reformulation.
     classifier_copy: torch.Tensor
+    # z_2: copy of the train-group simplex used by the unconstrained reformulation.
     train_simplex_copy: torch.Tensor
 
 
@@ -102,6 +124,8 @@ class CelebADROProblem:
         return 0.5 * eta.reshape(()).to(centered.dtype) * torch.sum(centered.square())
 
     def _group_weighted_ce(self, logits, labels, groups, simplex_weights, eta=None):
+        # This is L(D; x_1, y_1, q, eta) evaluated on one minibatch, where q is
+        # either y_2, z_2, or x_2 depending on which block is calling it.
         per_sample_loss = F.cross_entropy(logits, labels, reduction="none")
         group_loss, group_counts = self._group_average(per_sample_loss, groups)
         weighted = torch.dot(simplex_weights, group_loss)
@@ -115,13 +139,16 @@ class CelebADROProblem:
         train_inputs, train_labels, train_groups = train_batch
         val_inputs, val_labels, val_groups = val_batch
 
+        # Feature map phi(a; x_1) produced by the ResNet50 backbone.
         train_features = self._feature_forward(train_inputs)
         val_features = self._feature_forward(val_inputs)
 
+        # y_1 classifier logits on train / val, and z_1 copy logits on train.
         train_logits = classifier_logits(train_features, block_view.classifier)
         train_copy_logits = classifier_logits(train_features, block_view.classifier_copy)
         val_logits = classifier_logits(val_features, block_view.classifier)
 
+        # L_T(x_1, y_1, z_2, eta)
         train_min_term, train_min_group_loss, _ = self._group_weighted_ce(
             train_logits,
             train_labels,
@@ -129,6 +156,7 @@ class CelebADROProblem:
             block_view.train_simplex_copy,
             eta=block_view.eta,
         )
+        # L_T(x_1, z_1, y_2, eta)
         train_max_term, train_max_group_loss, _ = self._group_weighted_ce(
             train_copy_logits,
             train_labels,
@@ -136,6 +164,8 @@ class CelebADROProblem:
             block_view.train_simplex,
             eta=block_view.eta,
         )
+        # Diagnostic train objective using (x_1, y_1, y_2, eta). This is logged
+        # as dro/train_loss, but it is not the full h objective.
         train_primal_term, train_primal_group_loss, _ = self._group_weighted_ce(
             train_logits,
             train_labels,
@@ -143,6 +173,7 @@ class CelebADROProblem:
             block_view.train_simplex,
             eta=block_view.eta,
         )
+        # L_V(x_1, y_1, x_2, 0)
         val_term, val_group_loss, _ = self._group_weighted_ce(
             val_logits,
             val_labels,
@@ -153,6 +184,7 @@ class CelebADROProblem:
         train_min_reg = self._eta_regularizer(block_view.train_simplex_copy, block_view.eta)
         train_max_reg = self._eta_regularizer(block_view.train_simplex, block_view.eta)
         train_primal_reg = self._eta_regularizer(block_view.train_simplex, block_view.eta)
+        # h = f + rho * (tilde f(y_1, z_2) - tilde f(z_1, y_2))
         h_value = val_term + self.rho * (train_min_term - train_max_term)
         return {
             "h": h_value,

@@ -18,6 +18,15 @@ torch.set_default_dtype(torch.float32)
 DEFAULT_DATASET_ROOT = Path(__file__).resolve().parent / "celeba"
 WANDB_PROJECT = "minimax"
 
+# Implementation note for the bilevel variable mapping used below:
+#   x_1 = ResNet50 backbone parameters
+#   y_1 = classifier weights in R^{d x C}
+#   y_2 = train-group simplex weights
+#   x_2 = validation-group simplex weights
+#   z_1 = classifier copy in the reformulation
+#   z_2 = train-group simplex copy in the reformulation
+#   eta = learnable scalar DRO regularizer coefficient
+
 
 class _NoOpRun:
     def __init__(self):
@@ -88,8 +97,8 @@ def parse_args():
     parser.add_argument("--dataset_root", type=Path, default=DEFAULT_DATASET_ROOT)
     parser.add_argument("--target_name", default="Blond_Hair")
     parser.add_argument("--confounder_name", default="Male")
-    parser.add_argument("--batch_size", type=int, default=8)
-    parser.add_argument("--eval_batch_size", type=int, default=128)
+    parser.add_argument("--batch_size", type=int, default=64)
+    parser.add_argument("--eval_batch_size", type=int, default=8)
     parser.add_argument("--num_workers", type=int, default=4)
     parser.add_argument("--train_fraction", type=float, default=1.0) # keeps that fraction of the official CelebA train split before building the balanced train loader.
     parser.add_argument("--val_fraction", type=float, default=1.0)
@@ -99,15 +108,15 @@ def parse_args():
     parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     parser.add_argument("--train_from_scratch", action="store_true", default=False)
     parser.add_argument("--rho", type=float, default=1.0)
-    parser.add_argument("--eta_init", type=float, default=1.0)
+    parser.add_argument("--eta_init", type=float, default=10.0)
     parser.add_argument("--eta_min", type=float, default=1e-6)
     parser.add_argument("--solver_lip_h", type=float, default=10000.0)
     parser.add_argument("--solver_d_y", type=float, default=100.0)
     parser.add_argument("--solver_epsilon", type=float, default=1e-4)
     parser.add_argument("--solver_epsilon_0", type=float, default=1.0)
     parser.add_argument("--solver_lr", type=float, default=1.0)
-    parser.add_argument("--solver_max_outer_iters", type=int, default=20)
-    parser.add_argument("--solver_inner_max_iters", type=int, default=20)
+    parser.add_argument("--solver_max_outer_iters", type=int, default=1000)
+    parser.add_argument("--solver_inner_max_iters", type=int, default=1000)
     parser.add_argument("--monitor_batches", type=int, default=1)
     parser.add_argument("--log_every", type=int, default=1)
     parser.add_argument("--wandb_mode", default="online", choices=("online", "offline", "disabled"))
@@ -181,14 +190,20 @@ def main():
 
     backbone, feature_dim = build_resnet50_backbone(pretrained=not args.train_from_scratch)
     backbone = backbone.to(device)
-    classifier = init_classifier(feature_dim, 2, device=device)
+    classifier = init_classifier(feature_dim, 2, device=device)  # y_1
     eta = torch.nn.Parameter(torch.tensor([args.eta_init], device=device))
-    train_simplex = torch.nn.Parameter(torch.full((data_bundle["num_groups"],), 1.0 / data_bundle["num_groups"], device=device)) # [G] vector of group weights for the train distribution
-    val_simplex = torch.nn.Parameter(torch.full((data_bundle["num_groups"],), 1.0 / data_bundle["num_groups"], device=device)) # [G] vector of group weights for the validation distribution
-    classifier_copy = torch.nn.Parameter(classifier.detach().clone())
-    train_simplex_copy = torch.nn.Parameter(train_simplex.detach().clone())
+    train_simplex = torch.nn.Parameter(
+        torch.full((data_bundle["num_groups"],), 1.0 / data_bundle["num_groups"], device=device)
+    )  # y_2
+    val_simplex = torch.nn.Parameter(
+        torch.full((data_bundle["num_groups"],), 1.0 / data_bundle["num_groups"], device=device)
+    )  # x_2
+    classifier_copy = torch.nn.Parameter(classifier.detach().clone())  # z_1
+    train_simplex_copy = torch.nn.Parameter(train_simplex.detach().clone())  # z_2
 
+    # min block = (x_1, eta, y_1, y_2)
     min_block = list(backbone.parameters()) + [eta, classifier, train_simplex]
+    # max block = (x_2, z_1, z_2)
     max_block = [val_simplex, classifier_copy, train_simplex_copy]
 
     problem = CelebADROProblem(
@@ -206,12 +221,12 @@ def main():
         positive_eta_prox(args.eta_min),
         identity_prox,
         simplex_prox(project_onto_simplex),
-    ] # [prox for backbone params] + [prox for eta] + [prox for classifier] + [prox for train_simplex]
+    ] # [prox for x_1] + [prox for eta] + [prox for y_1] + [prox for y_2]
     max_prox = [
         simplex_prox(project_onto_simplex),
         identity_prox,
         simplex_prox(project_onto_simplex),
-    ]
+    ] # [prox for x_2] + [prox for z_1] + [prox for z_2]
 
     initial_metrics = problem.monitor_metrics(min_block, max_block)
     ensure_finite_metrics(initial_metrics, "initial evaluation", args.solver_lip_h)

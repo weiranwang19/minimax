@@ -19,9 +19,9 @@ torch.set_default_dtype(torch.float64)
 
 
 # Section 4.2 / Table 2 experiment controls. `PROBLEM_SIZES` is the actual grid of (n, m, l) values; the rest are algorithmic parameters that can be tuned for better performance.
-# PROBLEM_SIZES = [(100 * k, 100 * k, 5 * k) for k in range(1, 11)]
-PROBLEM_SIZES = [(400, 400, 20)]
-NUM_INSTANCES = 1
+PROBLEM_SIZES = [(100 * k, 100 * k, 5 * k) for k in range(3, 6)]
+# PROBLEM_SIZES = [(400, 400, 20), (500, 500, 25)]
+NUM_INSTANCES = 10
 SOLVER_METHOD = "gcmo"
 # FOP
 BASE_RHO = 5.0
