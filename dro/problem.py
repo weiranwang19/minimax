@@ -233,3 +233,61 @@ class CelebADROProblem:
             )
             metrics[f"dro/val_simplex_{group_idx}"] = float(block_view.val_simplex[group_idx].item())
         return metrics
+
+    @torch.no_grad()
+    def evaluate_loader(self, classifier, loader, prefix="eval"):
+        was_training = self.backbone.training
+        self.backbone.eval()
+
+        total_correct = 0
+        total_count = 0
+        total_loss = 0.0
+        group_correct = torch.zeros(self.num_groups, device=self.device)
+        group_count = torch.zeros(self.num_groups, device=self.device)
+        group_loss_sum = torch.zeros(self.num_groups, device=self.device)
+
+        for images, labels, groups in loader:
+            images = images.to(self.device, non_blocking=True)
+            labels = labels.to(self.device, non_blocking=True)
+            groups = groups.to(self.device, non_blocking=True)
+
+            logits = classifier_logits(self._feature_forward(images), classifier)
+            per_sample_loss = F.cross_entropy(logits, labels, reduction="none")
+            predictions = logits.argmax(dim=1)
+            correct = (predictions == labels).to(dtype=torch.float32)
+
+            total_correct += int(correct.sum().item())
+            total_count += int(labels.numel())
+            total_loss += float(per_sample_loss.sum().item())
+
+            for group_idx in range(self.num_groups):
+                mask = groups == group_idx
+                count = int(mask.sum().item())
+                if count == 0:
+                    continue
+                group_count[group_idx] += count
+                group_correct[group_idx] += correct[mask].sum()
+                group_loss_sum[group_idx] += per_sample_loss[mask].sum()
+
+        if was_training:
+            self.backbone.train()
+
+        metrics = {
+            f"{prefix}/accuracy": total_correct / max(total_count, 1),
+            f"{prefix}/loss": total_loss / max(total_count, 1),
+        }
+        valid_group_acc = []
+        for group_idx in range(self.num_groups):
+            count = float(group_count[group_idx].item())
+            if count > 0:
+                group_acc = float((group_correct[group_idx] / group_count[group_idx]).item())
+                group_loss = float((group_loss_sum[group_idx] / group_count[group_idx]).item())
+                valid_group_acc.append(group_acc)
+            else:
+                group_acc = float("nan")
+                group_loss = float("nan")
+            metrics[f"{prefix}/group_accuracy_{group_idx}"] = group_acc
+            metrics[f"{prefix}/group_loss_{group_idx}"] = group_loss
+            metrics[f"{prefix}/group_count_{group_idx}"] = count
+        metrics[f"{prefix}/worst_group_accuracy"] = min(valid_group_acc) if valid_group_acc else float("nan")
+        return metrics

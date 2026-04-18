@@ -89,9 +89,11 @@ def parse_args():
     parser.add_argument("--target_name", default="Blond_Hair")
     parser.add_argument("--confounder_name", default="Male")
     parser.add_argument("--batch_size", type=int, default=8)
+    parser.add_argument("--eval_batch_size", type=int, default=128)
     parser.add_argument("--num_workers", type=int, default=4)
-    parser.add_argument("--train_fraction", type=float, default=1.0)
+    parser.add_argument("--train_fraction", type=float, default=1.0) # keeps that fraction of the official CelebA train split before building the balanced train loader.
     parser.add_argument("--val_fraction", type=float, default=1.0)
+    parser.add_argument("--test_fraction", type=float, default=1.0)
     parser.add_argument("--augment_data", action="store_true", default=False)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
@@ -102,7 +104,7 @@ def parse_args():
     parser.add_argument("--solver_lip_h", type=float, default=10000.0)
     parser.add_argument("--solver_d_y", type=float, default=100.0)
     parser.add_argument("--solver_epsilon", type=float, default=1e-4)
-    parser.add_argument("--solver_epsilon_0", type=float, default=1e-1)
+    parser.add_argument("--solver_epsilon_0", type=float, default=1.0)
     parser.add_argument("--solver_lr", type=float, default=1.0)
     parser.add_argument("--solver_max_outer_iters", type=int, default=20)
     parser.add_argument("--solver_inner_max_iters", type=int, default=20)
@@ -166,11 +168,13 @@ def main():
         target_name=args.target_name,
         confounder_name=args.confounder_name,
         batch_size=args.batch_size,
+        eval_batch_size=args.eval_batch_size,
         num_workers=args.num_workers,
         seed=args.seed,
         augment=args.augment_data,
         train_fraction=args.train_fraction,
         val_fraction=args.val_fraction,
+        test_fraction=args.test_fraction,
         monitor_batches=args.monitor_batches,
         device=device,
     )
@@ -241,6 +245,8 @@ def main():
 
     final_metrics = problem.monitor_metrics(min_block, max_block)
     ensure_finite_metrics(final_metrics, "final evaluation", args.solver_lip_h)
+    test_metrics = problem.evaluate_loader(classifier, data_bundle["test_loader"], prefix="test")
+    ensure_finite_metrics(test_metrics, "test evaluation", args.solver_lip_h)
     elapsed = time.perf_counter() - start_time
     loss_decreased = (
         final_metrics["dro/h"] <= initial_metrics["dro/h"]
@@ -260,16 +266,28 @@ def main():
         "instance/final_train_loss": final_metrics["dro/train_loss"],
         "instance/initial_val_loss": initial_metrics["dro/val_loss"],
         "instance/final_val_loss": final_metrics["dro/val_loss"],
+        "instance/test_accuracy": test_metrics["test/accuracy"],
+        "instance/test_worst_group_accuracy": test_metrics["test/worst_group_accuracy"],
+        "instance/test_loss": test_metrics["test/loss"],
     }
+    summary.update({f"instance/{key.replace('/', '_')}": value for key, value in test_metrics.items()})
     if hasattr(run, "summary"):
         for key, value in summary.items():
             run.summary[key] = value
+    run.log(
+        {
+            "ncwc/cumulative_inner_iters": solver_stats["num_inner_iters"],
+            **test_metrics,
+        }
+    )
     run.finish()
 
     print(
         f"final h={final_metrics['dro/h']:.4f} "
         f"train={final_metrics['dro/train_loss']:.4f} "
         f"val={final_metrics['dro/val_loss']:.4f} "
+        f"test_acc={test_metrics['test/accuracy']:.4f} "
+        f"test_worst={test_metrics['test/worst_group_accuracy']:.4f} "
         f"eta={final_metrics['dro/eta']:.4f} "
         f"loss_decreased={int(loss_decreased)} "
         f"elapsed={elapsed:.1f}s",

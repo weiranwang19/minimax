@@ -181,16 +181,29 @@ def _make_loader(dataset, batch_size, num_workers, seed, num_batches=None):
     )
 
 
+def _make_eval_loader(dataset, batch_size, num_workers):
+    return DataLoader(
+        dataset,
+        batch_size=batch_size,
+        shuffle=False,
+        num_workers=num_workers,
+        pin_memory=True,
+        persistent_workers=num_workers > 0,
+    )
+
+
 def build_celeba_bundle(
     root_dir,
     target_name,
     confounder_name,
     batch_size,
+    eval_batch_size,
     num_workers,
     seed,
     augment,
     train_fraction=1.0,
     val_fraction=1.0,
+    test_fraction=1.0,
     monitor_batches=1,
     device=None,
 ):
@@ -224,6 +237,16 @@ def build_celeba_bundle(
         seed=seed,
         eval_mode=True,
     )
+    test_dataset = CelebASplitDataset(
+        root_dir,
+        split="test",
+        target_name=target_name,
+        confounder_name=confounder_name,
+        augment=False,
+        fraction=test_fraction,
+        seed=seed,
+        eval_mode=True,
+    )
 
     train_loader = _make_loader(train_dataset, batch_size, num_workers, seed)
     val_loader = _make_loader(val_dataset, batch_size, num_workers, seed + 1)
@@ -241,15 +264,19 @@ def build_celeba_bundle(
         seed + 3,
         num_batches=monitor_batches,
     )
+    test_loader = _make_eval_loader(test_dataset, eval_batch_size, num_workers)
 
     return {
         "train_dataset": train_dataset,
         "val_dataset": val_dataset,
+        "test_dataset": test_dataset,
         "train_provider": CyclingBatchProvider(train_loader, device=device),
         "val_provider": CyclingBatchProvider(val_loader, device=device),
         "train_monitor_batches": capture_monitor_batches(train_monitor_loader, monitor_batches),
         "val_monitor_batches": capture_monitor_batches(val_monitor_loader, monitor_batches),
+        "test_loader": test_loader,
         "num_groups": train_dataset.num_groups,
         "train_group_counts": train_dataset.group_counts(),
         "val_group_counts": val_dataset.group_counts(),
+        "test_group_counts": test_dataset.group_counts(),
     }
