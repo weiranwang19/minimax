@@ -353,14 +353,15 @@ class SAPD_SCSC(Optimizer):
         x_k = clone_vals(self.get_x())
         y_k = clone_vals(self.get_y())
         q_k = zero_vals(self.get_y())
-        print(f"k={0}: x_0={x_k}, y_0={y_k}")
 
         x_output = clone_vals(x_k)
         y_output = clone_vals(y_k)
+        final_delta = None
+        terminated = False
 
         for k in range(self.max_iter):
             # line 5
-            grad_y = self.compute_h_and_gradient(x_k, y_k, var='y')
+            _, grad_y = self.compute_h_and_gradient(x_k, y_k, var='y')
             s_k = add_vals(grad_y, scale_vals(q_k, self.theta))
 
             # line 6
@@ -375,9 +376,14 @@ class SAPD_SCSC(Optimizer):
             # line 8
             _, grad_y_kp1 = self.compute_h_and_gradient(x_kp1, y_kp1, var='y')
             q_k = add_vals(grad_y_kp1, scale_vals(grad_y, -1))
+            final_delta = float(
+                compute_norm(
+                    add_vals(x_kp1, scale_vals(x_k, -1))
+                    + add_vals(y_kp1, scale_vals(y_k, -1))
+                ).item()
+            )
             x_k = x_kp1
             y_k = y_kp1
-            # print(f"k={k}: x_kp1={x_kp1}, y_kp1={y_kp1}")
 
             # Compute running average.
             N = k+1
@@ -387,8 +393,12 @@ class SAPD_SCSC(Optimizer):
         # add metrics here.
         self.assign_x(x_output)
         self.assign_y(y_output)
-        print(f"k={k}: x_output={x_output}, y_output={y_output}")
-        return {"num_inner_iters": k}
+        return {
+            "num_outer_iters": self.max_iter,
+            "num_inner_iters": self.max_iter,
+            "final_delta": final_delta,
+            "terminated": terminated,
+        }
 
 
 def optimize_NCWC(
@@ -404,6 +414,7 @@ def optimize_NCWC(
     sub_routine='deterministic',
     lr=1,
     max_iter=1000,
+    subproblem_max_iter=None,
     verbose=False,
     log_every=1,
     objective_func=None,
@@ -424,6 +435,8 @@ def optimize_NCWC(
         raise ValueError(f"Invalid epsilon_0: {epsilon_0}")
     if max_iter <= 0:
         raise ValueError(f"Invalid max_iter: {max_iter}")
+    if subproblem_max_iter is not None and subproblem_max_iter <= 0:
+        raise ValueError(f"Invalid subproblem_max_iter: {subproblem_max_iter}")
     if log_every <= 0:
         raise ValueError(f"Invalid log_every: {log_every}")
     if objective_func is not None and not callable(objective_func):
@@ -437,6 +450,7 @@ def optimize_NCWC(
     params_y = list(params_y)
     x_k = clone_vals(params_x)
     y_0 = clone_vals(params_y)
+    inner_max_iter = max_iter if subproblem_max_iter is None else subproblem_max_iter
 
     num_outer_iters = 0
     num_inner_iters = 0
@@ -487,7 +501,7 @@ def optimize_NCWC(
                 prox_y=prox_y,
                 tau=epsilon_k,
                 lr=lr,
-                max_iter=max_iter,
+                max_iter=inner_max_iter,
                 verbose=verbose,
                 log_every=log_every,
             )
@@ -501,7 +515,7 @@ def optimize_NCWC(
                 lip=lip_k,
                 prox_x=prox_x,
                 prox_y=prox_y,
-                max_iter=max_iter,
+                max_iter=inner_max_iter,
                 verbose=verbose,
                 log_every=log_every,
             )
