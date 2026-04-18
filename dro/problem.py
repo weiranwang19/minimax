@@ -50,7 +50,6 @@ class CelebADROProblem:
         val_monitor_batches,
         rho,
         device,
-        weight_decay=0.0,
     ):
         self.backbone = backbone
         self.num_groups = num_groups
@@ -60,7 +59,6 @@ class CelebADROProblem:
         self.val_monitor_batches = val_monitor_batches
         self.rho = rho
         self.device = device
-        self.weight_decay = weight_decay
         self.backbone_param_count = len(list(backbone.parameters()))
         self.uniform_weights = torch.full((num_groups,), 1.0 / num_groups, device=device)
         self.backbone.eval()
@@ -99,11 +97,9 @@ class CelebADROProblem:
                 group_means.append(values[mask].mean())
         return torch.stack(group_means), torch.stack(group_counts)
 
-    def _regularizer(self, block_view):
-        if self.weight_decay <= 0:
-            return torch.zeros((), device=self.device)
-        norm_sq = compute_norm(block_view.backbone_params + [block_view.classifier]) ** 2
-        return 0.5 * self.weight_decay * norm_sq
+    def _eta_regularizer(self, simplex_weights, eta):
+        centered = simplex_weights - self.uniform_weights
+        return 0.5 * eta.reshape(()).to(centered.dtype) * torch.sum(centered.square())
 
     def _group_weighted_ce(self, logits, labels, groups, simplex_weights, eta=None):
         per_sample_loss = F.cross_entropy(logits, labels, reduction="none")
@@ -154,15 +150,19 @@ class CelebADROProblem:
             block_view.val_simplex,
             eta=None,
         )
-        reg_term = self._regularizer(block_view)
-        h_value = val_term + self.rho * (train_min_term - train_max_term) + reg_term
+        train_min_reg = self._eta_regularizer(block_view.train_simplex_copy, block_view.eta)
+        train_max_reg = self._eta_regularizer(block_view.train_simplex, block_view.eta)
+        train_primal_reg = self._eta_regularizer(block_view.train_simplex, block_view.eta)
+        h_value = val_term + self.rho * (train_min_term - train_max_term)
         return {
             "h": h_value,
             "train_min_term": train_min_term,
             "train_max_term": train_max_term,
             "train_primal_term": train_primal_term,
             "val_term": val_term,
-            "reg_term": reg_term,
+            "train_min_reg": train_min_reg,
+            "train_max_reg": train_max_reg,
+            "train_primal_reg": train_primal_reg,
             "train_primal_group_loss": train_primal_group_loss,
             "train_min_group_loss": train_min_group_loss,
             "train_max_group_loss": train_max_group_loss,
@@ -196,6 +196,8 @@ class CelebADROProblem:
             "dro/train_min_term": 0.0,
             "dro/train_max_term": 0.0,
             "dro/reg_loss": 0.0,
+            "dro/train_min_reg": 0.0,
+            "dro/train_max_reg": 0.0,
         }
         train_group_loss = torch.zeros(self.num_groups, device=self.device)
         val_group_loss = torch.zeros(self.num_groups, device=self.device)
@@ -208,7 +210,9 @@ class CelebADROProblem:
             totals["dro/val_loss"] += float(stats["val_term"].item())
             totals["dro/train_min_term"] += float(stats["train_min_term"].item())
             totals["dro/train_max_term"] += float(stats["train_max_term"].item())
-            totals["dro/reg_loss"] += float(stats["reg_term"].item())
+            totals["dro/reg_loss"] += float(stats["train_primal_reg"].item())
+            totals["dro/train_min_reg"] += float(stats["train_min_reg"].item())
+            totals["dro/train_max_reg"] += float(stats["train_max_reg"].item())
             train_group_loss += stats["train_primal_group_loss"]
             val_group_loss += stats["val_group_loss"]
 

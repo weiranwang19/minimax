@@ -97,12 +97,11 @@ def parse_args():
     parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     parser.add_argument("--train_from_scratch", action="store_true", default=False)
     parser.add_argument("--rho", type=float, default=1.0)
-    parser.add_argument("--weight_decay", type=float, default=0.0)
     parser.add_argument("--eta_init", type=float, default=1.0)
     parser.add_argument("--eta_min", type=float, default=1e-6)
     parser.add_argument("--solver_lip_h", type=float, default=10000.0)
     parser.add_argument("--solver_d_y", type=float, default=100.0)
-    parser.add_argument("--solver_epsilon", type=float, default=1e-2)
+    parser.add_argument("--solver_epsilon", type=float, default=1e-4)
     parser.add_argument("--solver_epsilon_0", type=float, default=1e-1)
     parser.add_argument("--solver_lr", type=float, default=1.0)
     parser.add_argument("--solver_max_outer_iters", type=int, default=20)
@@ -197,7 +196,6 @@ def main():
         val_monitor_batches=data_bundle["val_monitor_batches"],
         rho=args.rho,
         device=device,
-        weight_decay=args.weight_decay,
     )
 
     min_prox = [identity_prox] * len(list(backbone.parameters())) + [
