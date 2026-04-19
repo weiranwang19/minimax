@@ -141,7 +141,7 @@ class CelebADROProblem:
             sq_norm = sq_norm + torch.sum(param.square())
         return 0.5 * self.weight_decay * sq_norm
 
-    def _classifier_l2_regularizer(self, classifier)
+    def _classifier_l2_regularizer(self, classifier):
         return 0.5 * self.weight_decay * torch.sum(classifier.square())
 
     def _group_weighted_ce(self, logits, labels, groups, simplex_weights, eta=None):
@@ -201,8 +201,8 @@ class CelebADROProblem:
             block_view.train_simplex,
             eta=block_view.eta,
         )
-        # Diagnostic train objective using (x_1, y_1, y_2, eta). This is logged
-        # as dro/train_loss, but it is not the full h objective.
+        # Diagnostic train objective using (x_1, y_1, y_2, eta) plus R(y_1).
+        # This is logged as dro/train_loss, but it is not the full h objective.
         train_primal_term, train_primal_group_loss, _ = self._group_weighted_ce(
             train_logits,
             train_labels,
@@ -231,26 +231,36 @@ class CelebADROProblem:
 
         # x_1
         backbone_reg = self._backbone_l2_regularizer(block_view.backbone_params)
+        # y_1
+        classifier_reg = self._classifier_l2_regularizer(block_view.classifier)
+        # z_1
+        classifier_copy_reg = self._classifier_l2_regularizer(block_view.classifier_copy)
         # z_2
         train_min_simplex_reg = self._eta_regularizer(block_view.train_simplex_copy, block_view.eta)
         # y_2
         train_max_simplex_reg = self._eta_regularizer(block_view.train_simplex, block_view.eta)
-
-        # ce + z_2 + y_1
-        train_min_term = train_min_term + self._classifier_l2_regularizer(block_view.classifier)
-        # ce + y_2 + z_1
-        train_max_term = train_max_term + self._classifier_l2_regularizer(block_view.classifier_copy)
-        # ce + y_2 + y_1
-        train_primal_term = train_primal_term + self._classifier_l2_regularizer(block_view.classifier)
+        # y_2
+        train_primal_simplex_reg = self._eta_regularizer(block_view.train_simplex, block_view.eta)
 
         # z_2 + y_1
-        train_min_reg = train_min_simplex_reg + self._classifier_l2_regularizer(block_view.classifier)
+        train_min_term = train_min_term + classifier_reg
         # y_2 + z_1
-        train_max_reg = train_max_simplex_reg + self._classifier_l2_regularizer(block_view.classifier_copy)
+        train_max_term = train_max_term + classifier_copy_reg
         # y_2 + y_1
-        train_primal_reg = train_primal_simplex_reg + self._classifier_l2_regularizer(block_view.classifier)
+        train_primal_term = train_primal_term + classifier_reg
 
-        # h = f + R(x_1) + rho * (tilde f(y_1, z_2) + R(y_1) - tilde f(z_1, y_2) - R(z_2))
+        # z_2 + y_1
+        train_min_reg = train_min_simplex_reg + classifier_reg
+        # y_2 + z_1
+        train_max_reg = train_max_simplex_reg + classifier_copy_reg
+        # y_2 + y_1
+        train_primal_reg = train_primal_simplex_reg + classifier_reg
+        # x_1 + y_1
+        model_reg = backbone_reg + classifier_reg
+
+        # h = L_V(x_1, y_1, x_2, 0) + R(x_1) + rho * (
+        #     L_T(x_1, y_1, z_2, eta) + R(y_1) - L_T(x_1, z_1, y_2, eta) - R(z_1)
+        # )
         h_value = val_term + backbone_reg + self.rho * (train_min_term - train_max_term)
         return {
             "h": h_value,
@@ -258,6 +268,9 @@ class CelebADROProblem:
             "train_max_term": train_max_term,
             "train_primal_term": train_primal_term,
             "val_term": val_term,
+            "backbone_reg": backbone_reg,
+            "classifier_reg": classifier_reg,
+            "classifier_copy_reg": classifier_copy_reg,
             "train_min_reg": train_min_reg,
             "train_max_reg": train_max_reg,
             "train_primal_reg": train_primal_reg,

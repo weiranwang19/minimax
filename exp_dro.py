@@ -117,8 +117,8 @@ def parse_args():
     parser.add_argument("--rho", type=float, default=1.0)
     parser.add_argument("--eta_init", type=float, default=10.0)
     parser.add_argument("--eta_min", type=float, default=1e-6)
-    # L2 coefficient on the backbone + classifier parameters inside the train DRO loss.
-    parser.add_argument("--weight_decay", type=float, default=0.0)
+    # L2 coefficient used for R(x_1), R(y_1), and R(z_1) in the DRO objective.
+    parser.add_argument("--weight_decay", type=float, default=0.1)
     parser.add_argument("--solver_lip_h", type=float, default=1000.0)
     parser.add_argument("--solver_d_y", type=float, default=100.0)
     parser.add_argument("--solver_epsilon", type=float, default=1e-4)
