@@ -10,7 +10,10 @@ Variable mapping to the user's notation:
     eta: learnable scalar coefficient on the train DRO regularizer
 
 The current implementation follows the value-gap reformulation:
-    h = L_V(x_1, y_1, x_2, 0) + rho * (L_T(x_1, y_1, z_2, eta) - L_T(x_1, z_1, y_2, eta))
+    h = L_V(x_1, y_1, x_2, 0) + rho * (
+        L_T(x_1, y_1, z_2, eta) + R(x_1, y_1) - L_T(x_1, z_1, y_2, eta)
+    )
+where R is the optional model-parameter L2 penalty controlled by weight_decay.
 """
 
 from dataclasses import dataclass
@@ -71,6 +74,7 @@ class CelebADROProblem:
         train_monitor_batches,
         val_monitor_batches,
         rho,
+        weight_decay,
         device,
     ):
         self.backbone = backbone
@@ -80,6 +84,7 @@ class CelebADROProblem:
         self.train_monitor_batches = train_monitor_batches
         self.val_monitor_batches = val_monitor_batches
         self.rho = rho
+        self.weight_decay = weight_decay
         self.device = device
         self.backbone_param_count = len(list(backbone.parameters()))
         self.uniform_weights = torch.full((num_groups,), 1.0 / num_groups, device=device)
@@ -123,6 +128,15 @@ class CelebADROProblem:
         centered = simplex_weights - self.uniform_weights
         return 0.5 * eta.reshape(()).to(centered.dtype) * torch.sum(centered.square())
 
+    def _model_l2_regularizer(self, backbone_params, classifier):
+        if self.weight_decay <= 0:
+            return classifier.new_zeros(())
+
+        sq_norm = torch.sum(classifier.square())
+        for param in backbone_params:
+            sq_norm = sq_norm + torch.sum(param.square())
+        return 0.5 * self.weight_decay * sq_norm
+
     def _group_weighted_ce(self, logits, labels, groups, simplex_weights, eta=None):
         # This is L(D; x_1, y_1, q, eta) evaluated on one minibatch, where q is
         # either y_2, z_2, or x_2 depending on which block is calling it.
@@ -133,6 +147,22 @@ class CelebADROProblem:
             centered = simplex_weights - self.uniform_weights
             weighted = weighted - 0.5 * eta.reshape(()).to(weighted.dtype) * torch.sum(centered.square())
         return weighted, group_loss, group_counts
+
+    def _classification_stats(self, logits, labels, groups):
+        predictions = logits.argmax(dim=1)
+        correct = (predictions == labels).to(dtype=torch.float32)
+        total_correct = correct.sum()
+        total_count = torch.tensor(float(labels.numel()), device=logits.device)
+        group_correct = torch.zeros(self.num_groups, device=logits.device)
+        group_count = torch.zeros(self.num_groups, device=logits.device)
+        for group_idx in range(self.num_groups):
+            mask = groups == group_idx
+            count = mask.sum()
+            if count.item() == 0:
+                continue
+            group_count[group_idx] = count.to(dtype=group_count.dtype)
+            group_correct[group_idx] = correct[mask].sum()
+        return total_correct, total_count, group_correct, group_count
 
     def _objective_from_batches(self, train_batch, val_batch, min_block, max_block):
         block_view = self._view(min_block, max_block)
@@ -181,10 +211,26 @@ class CelebADROProblem:
             block_view.val_simplex,
             eta=None,
         )
-        train_min_reg = self._eta_regularizer(block_view.train_simplex_copy, block_view.eta)
-        train_max_reg = self._eta_regularizer(block_view.train_simplex, block_view.eta)
-        train_primal_reg = self._eta_regularizer(block_view.train_simplex, block_view.eta)
-        # h = f + rho * (tilde f(y_1, z_2) - tilde f(z_1, y_2))
+        train_correct, train_count, train_group_correct, train_group_count = self._classification_stats(
+            train_logits,
+            train_labels,
+            train_groups,
+        )
+        val_correct, val_count, val_group_correct, val_group_count = self._classification_stats(
+            val_logits,
+            val_labels,
+            val_groups,
+        )
+        model_reg = self._model_l2_regularizer(block_view.backbone_params, block_view.classifier)
+        train_min_simplex_reg = self._eta_regularizer(block_view.train_simplex_copy, block_view.eta)
+        train_max_simplex_reg = self._eta_regularizer(block_view.train_simplex, block_view.eta)
+        train_primal_simplex_reg = self._eta_regularizer(block_view.train_simplex, block_view.eta)
+        train_min_term = train_min_term + model_reg
+        train_primal_term = train_primal_term + model_reg
+        train_min_reg = train_min_simplex_reg + model_reg
+        train_max_reg = train_max_simplex_reg
+        train_primal_reg = train_primal_simplex_reg + model_reg
+        # h = f + rho * (tilde f(y_1, z_2) + R(x_1, y_1) - tilde f(z_1, y_2))
         h_value = val_term + self.rho * (train_min_term - train_max_term)
         return {
             "h": h_value,
@@ -195,10 +241,22 @@ class CelebADROProblem:
             "train_min_reg": train_min_reg,
             "train_max_reg": train_max_reg,
             "train_primal_reg": train_primal_reg,
+            "model_reg": model_reg,
+            "train_min_simplex_reg": train_min_simplex_reg,
+            "train_max_simplex_reg": train_max_simplex_reg,
+            "train_primal_simplex_reg": train_primal_simplex_reg,
             "train_primal_group_loss": train_primal_group_loss,
             "train_min_group_loss": train_min_group_loss,
             "train_max_group_loss": train_max_group_loss,
             "val_group_loss": val_group_loss,
+            "train_correct": train_correct,
+            "train_count": train_count,
+            "train_group_correct": train_group_correct,
+            "train_group_count": train_group_count,
+            "val_correct": val_correct,
+            "val_count": val_count,
+            "val_group_correct": val_group_correct,
+            "val_group_count": val_group_count,
         }
 
     def h_func(self, min_block, max_block):
@@ -228,11 +286,21 @@ class CelebADROProblem:
             "dro/train_min_term": 0.0,
             "dro/train_max_term": 0.0,
             "dro/reg_loss": 0.0,
+            "dro/model_reg_loss": 0.0,
+            "dro/simplex_reg_loss": 0.0,
             "dro/train_min_reg": 0.0,
             "dro/train_max_reg": 0.0,
         }
         train_group_loss = torch.zeros(self.num_groups, device=self.device)
         val_group_loss = torch.zeros(self.num_groups, device=self.device)
+        train_group_correct = torch.zeros(self.num_groups, device=self.device)
+        val_group_correct = torch.zeros(self.num_groups, device=self.device)
+        train_group_count = torch.zeros(self.num_groups, device=self.device)
+        val_group_count = torch.zeros(self.num_groups, device=self.device)
+        train_correct_total = 0.0
+        val_correct_total = 0.0
+        train_count_total = 0.0
+        val_count_total = 0.0
         for batch_idx in range(num_pairs):
             train_batch = tuple(t.to(self.device) for t in self.train_monitor_batches[batch_idx])
             val_batch = tuple(t.to(self.device) for t in self.val_monitor_batches[batch_idx])
@@ -243,19 +311,33 @@ class CelebADROProblem:
             totals["dro/train_min_term"] += float(stats["train_min_term"].item())
             totals["dro/train_max_term"] += float(stats["train_max_term"].item())
             totals["dro/reg_loss"] += float(stats["train_primal_reg"].item())
+            totals["dro/model_reg_loss"] += float(stats["model_reg"].item())
+            totals["dro/simplex_reg_loss"] += float(stats["train_primal_simplex_reg"].item())
             totals["dro/train_min_reg"] += float(stats["train_min_reg"].item())
             totals["dro/train_max_reg"] += float(stats["train_max_reg"].item())
             train_group_loss += stats["train_primal_group_loss"]
             val_group_loss += stats["val_group_loss"]
+            train_group_correct += stats["train_group_correct"]
+            val_group_correct += stats["val_group_correct"]
+            train_group_count += stats["train_group_count"]
+            val_group_count += stats["val_group_count"]
+            train_correct_total += float(stats["train_correct"].item())
+            val_correct_total += float(stats["val_correct"].item())
+            train_count_total += float(stats["train_count"].item())
+            val_count_total += float(stats["val_count"].item())
 
         denom = float(num_pairs)
         metrics = {key: value / denom for key, value in totals.items()}
+        metrics["dro/train_accuracy"] = train_correct_total / max(train_count_total, 1.0)
+        metrics["dro/val_accuracy"] = val_correct_total / max(val_count_total, 1.0)
         metrics["dro/eta"] = float(block_view.eta.item())
         metrics["dro/backbone_norm"] = float(compute_norm(block_view.backbone_params).item())
         metrics["dro/classifier_norm"] = float(torch.linalg.vector_norm(block_view.classifier).item())
         metrics["dro/classifier_copy_gap"] = float(
             torch.linalg.vector_norm(block_view.classifier - block_view.classifier_copy).item()
         )
+        train_valid_group_acc = []
+        val_valid_group_acc = []
         for group_idx in range(self.num_groups):
             metrics[f"dro/train_group_loss_{group_idx}"] = float((train_group_loss[group_idx] / denom).item())
             metrics[f"dro/val_group_loss_{group_idx}"] = float((val_group_loss[group_idx] / denom).item())
@@ -264,6 +346,16 @@ class CelebADROProblem:
                 block_view.train_simplex_copy[group_idx].item()
             )
             metrics[f"dro/val_simplex_{group_idx}"] = float(block_view.val_simplex[group_idx].item())
+            train_group_count_value = float(train_group_count[group_idx].item())
+            if train_group_count_value > 0:
+                train_valid_group_acc.append(float((train_group_correct[group_idx] / train_group_count[group_idx]).item()))
+            val_group_count_value = float(val_group_count[group_idx].item())
+            if val_group_count_value > 0:
+                val_valid_group_acc.append(float((val_group_correct[group_idx] / val_group_count[group_idx]).item()))
+        metrics["dro/train_worst_group_accuracy"] = (
+            min(train_valid_group_acc) if train_valid_group_acc else float("nan")
+        )
+        metrics["dro/val_worst_group_accuracy"] = min(val_valid_group_acc) if val_valid_group_acc else float("nan")
         return metrics
 
     @torch.no_grad()

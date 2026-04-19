@@ -70,6 +70,13 @@ def init_run(args):
             "dro/h",
             "dro/train_loss",
             "dro/val_loss",
+            "dro/train_accuracy",
+            "dro/val_accuracy",
+            "dro/train_worst_group_accuracy",
+            "dro/val_worst_group_accuracy",
+            "dro/reg_loss",
+            "dro/model_reg_loss",
+            "dro/simplex_reg_loss",
         ):
             run.define_metric(metric, step_metric=step_metric)
     return run
@@ -110,6 +117,8 @@ def parse_args():
     parser.add_argument("--rho", type=float, default=1.0)
     parser.add_argument("--eta_init", type=float, default=10.0)
     parser.add_argument("--eta_min", type=float, default=1e-6)
+    # L2 coefficient on the backbone + classifier parameters inside the train DRO loss.
+    parser.add_argument("--weight_decay", type=float, default=0.0)
     parser.add_argument("--solver_lip_h", type=float, default=1000.0)
     parser.add_argument("--solver_d_y", type=float, default=100.0)
     parser.add_argument("--solver_epsilon", type=float, default=1e-4)
@@ -167,7 +176,9 @@ def make_progress_logger(run, problem, classifier, test_loader, test_eval_every,
             f"outer={completed_outer_iters} "
             f"h={metrics.get('dro/h', float('nan')):.4f} "
             f"train={metrics.get('dro/train_loss', float('nan')):.4f} "
+            f"train_acc={metrics.get('dro/train_accuracy', float('nan')):.4f} "
             f"val={metrics.get('dro/val_loss', float('nan')):.4f} "
+            f"val_acc={metrics.get('dro/val_accuracy', float('nan')):.4f} "
             f"eta={metrics.get('dro/eta', float('nan')):.4f} "
             f"diff={payload.get('final_diff')}",
             flush=True,
@@ -188,6 +199,8 @@ def main():
     args = parse_args()
     if args.batch_size < 4:
         raise ValueError("batch_size must be at least 4 so each batch can contain all 4 groups")
+    if args.weight_decay < 0:
+        raise ValueError("weight_decay must be non-negative")
 
     set_seed(args.seed)
     device = torch.device(args.device)
@@ -236,6 +249,7 @@ def main():
         train_monitor_batches=data_bundle["train_monitor_batches"],
         val_monitor_batches=data_bundle["val_monitor_batches"],
         rho=args.rho,
+        weight_decay=args.weight_decay,
         device=device,
     )
 
