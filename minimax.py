@@ -296,7 +296,7 @@ class SAPD_SCSC(Optimizer):
         https://arxiv.org/pdf/2205.15084
     """
 
-    def __init__(self, params_x, params_y, h_bar, mu_x, mu_y, lip, prox_x, prox_y, max_iter=1000, verbose=False, log_every=1):
+    def __init__(self, params_x, params_y, h_bar, mu_x, mu_y, lip, prox_x, prox_y, lip_tau=None, max_iter=1000, verbose=False, log_every=1):
         if max_iter <= 0:
             raise ValueError(f"Invalid max_iter: {max_iter}")
         if log_every <= 0:
@@ -317,7 +317,7 @@ class SAPD_SCSC(Optimizer):
         self.log_every = log_every
 
         self.sigma =  1 / lip
-        self.tau = 1 / lip
+        self.tau = 1 / lip_tau if lip_tau is not None else 1 / lip
         self.theta = 1
         theoretical_num_iter = 33 * max(4/(mu_x * self.tau), 8 / (mu_y * self.sigma))
         theoretical_num_iter = int( max(theoretical_num_iter, 1) )
