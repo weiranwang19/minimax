@@ -10,8 +10,8 @@ Variable mapping to the user's notation:
     eta: learnable scalar coefficient on the train DRO regularizer
 
 The current implementation follows the value-gap reformulation:
-    h = L_V(x_1, y_1, x_2, 0) + rho * (
-        L_T(x_1, y_1, z_2, eta) + R(x_1, y_1) - L_T(x_1, z_1, y_2, eta)
+    h = L_V(x_1, y_1, x_2, 0) + R(x_1) + rho * (
+        L_T(x_1, y_1, z_2, eta) + R(y_1) - L_T(x_1, z_1, y_2, eta) - R(z_1)
     )
 where R is the optional model-parameter L2 penalty controlled by weight_decay.
 """
@@ -98,12 +98,19 @@ class CelebADROProblem:
         if len(max_block) != 3:
             raise ValueError(f"Expected 3 max-block tensors, got {len(max_block)}")
         return DROBlockView(
+            # x_1
             backbone_params=min_block[: self.backbone_param_count],
+            # eta
             eta=min_block[self.backbone_param_count],
+            # y_1
             classifier=min_block[self.backbone_param_count + 1],
+            # y_2
             train_simplex=min_block[self.backbone_param_count + 2],
+            # x_2
             val_simplex=max_block[0],
+            # z_1
             classifier_copy=max_block[1],
+            # z_2
             train_simplex_copy=max_block[2],
         )
 
@@ -128,14 +135,14 @@ class CelebADROProblem:
         centered = simplex_weights - self.uniform_weights
         return 0.5 * eta.reshape(()).to(centered.dtype) * torch.sum(centered.square())
 
-    def _model_l2_regularizer(self, backbone_params, classifier):
-        if self.weight_decay <= 0:
-            return classifier.new_zeros(())
-
-        sq_norm = torch.sum(classifier.square())
+    def _backbone_l2_regularizer(self, backbone_params):
+        sq_norm = 0.0
         for param in backbone_params:
             sq_norm = sq_norm + torch.sum(param.square())
         return 0.5 * self.weight_decay * sq_norm
+
+    def _classifier_l2_regularizer(self, classifier)
+        return 0.5 * self.weight_decay * torch.sum(classifier.square())
 
     def _group_weighted_ce(self, logits, labels, groups, simplex_weights, eta=None):
         # This is L(D; x_1, y_1, q, eta) evaluated on one minibatch, where q is
@@ -221,17 +228,30 @@ class CelebADROProblem:
             val_labels,
             val_groups,
         )
-        model_reg = self._model_l2_regularizer(block_view.backbone_params, block_view.classifier)
+
+        # x_1
+        backbone_reg = self._backbone_l2_regularizer(block_view.backbone_params)
+        # z_2
         train_min_simplex_reg = self._eta_regularizer(block_view.train_simplex_copy, block_view.eta)
+        # y_2
         train_max_simplex_reg = self._eta_regularizer(block_view.train_simplex, block_view.eta)
-        train_primal_simplex_reg = self._eta_regularizer(block_view.train_simplex, block_view.eta)
-        train_min_term = train_min_term + model_reg
-        train_primal_term = train_primal_term + model_reg
-        train_min_reg = train_min_simplex_reg + model_reg
-        train_max_reg = train_max_simplex_reg
-        train_primal_reg = train_primal_simplex_reg + model_reg
-        # h = f + rho * (tilde f(y_1, z_2) + R(x_1, y_1) - tilde f(z_1, y_2))
-        h_value = val_term + self.rho * (train_min_term - train_max_term)
+
+        # ce + z_2 + y_1
+        train_min_term = train_min_term + self._classifier_l2_regularizer(block_view.classifier)
+        # ce + y_2 + z_1
+        train_max_term = train_max_term + self._classifier_l2_regularizer(block_view.classifier_copy)
+        # ce + y_2 + y_1
+        train_primal_term = train_primal_term + self._classifier_l2_regularizer(block_view.classifier)
+
+        # z_2 + y_1
+        train_min_reg = train_min_simplex_reg + self._classifier_l2_regularizer(block_view.classifier)
+        # y_2 + z_1
+        train_max_reg = train_max_simplex_reg + self._classifier_l2_regularizer(block_view.classifier_copy)
+        # y_2 + y_1
+        train_primal_reg = train_primal_simplex_reg + self._classifier_l2_regularizer(block_view.classifier)
+
+        # h = f + R(x_1) + rho * (tilde f(y_1, z_2) + R(y_1) - tilde f(z_1, y_2) - R(z_2))
+        h_value = val_term + backbone_reg + self.rho * (train_min_term - train_max_term)
         return {
             "h": h_value,
             "train_min_term": train_min_term,
