@@ -88,7 +88,6 @@ class CelebADROProblem:
         self.device = device
         self.backbone_param_count = len(list(backbone.parameters()))
         self.uniform_weights = torch.full((num_groups,), 1.0 / num_groups, device=device)
-        self.backbone.eval()
 
     def _view(self, min_block, max_block):
         if len(min_block) != self.backbone_param_count + 3:
@@ -115,7 +114,6 @@ class CelebADROProblem:
         )
 
     def _feature_forward(self, images):
-        self.backbone.eval()
         return self.backbone(images)
 
     def _group_average(self, values, groups):
@@ -249,14 +247,14 @@ class CelebADROProblem:
         # y_2 + y_1
         train_primal_term = train_primal_term + classifier_reg
 
-        # z_2 + y_1
-        train_min_reg = train_min_simplex_reg + classifier_reg
-        # y_2 + z_1
-        train_max_reg = train_max_simplex_reg + classifier_copy_reg
-        # y_2 + y_1
-        train_primal_reg = train_primal_simplex_reg + classifier_reg
-        # x_1 + y_1
-        model_reg = backbone_reg + classifier_reg
+#         # z_2 + y_1
+#         train_min_reg = train_min_simplex_reg + classifier_reg
+#         # y_2 + z_1
+#         train_max_reg = train_max_simplex_reg + classifier_copy_reg
+#         # y_2 + y_1
+#         train_primal_reg = train_primal_simplex_reg + classifier_reg
+#         # x_1 + y_1
+#         model_reg = backbone_reg + classifier_reg
 
         # h = L_V(x_1, y_1, x_2, 0) + R(x_1) + rho * (
         #     L_T(x_1, y_1, z_2, eta) + R(y_1) - L_T(x_1, z_1, y_2, eta) - R(z_1)
@@ -264,17 +262,17 @@ class CelebADROProblem:
         h_value = val_term + backbone_reg + self.rho * (train_min_term - train_max_term)
         return {
             "h": h_value,
-            "train_min_term": train_min_term,
-            "train_max_term": train_max_term,
-            "train_primal_term": train_primal_term,
-            "val_term": val_term,
-            "backbone_reg": backbone_reg,
-            "classifier_reg": classifier_reg,
-            "classifier_copy_reg": classifier_copy_reg,
-            "train_min_reg": train_min_reg,
-            "train_max_reg": train_max_reg,
-            "train_primal_reg": train_primal_reg,
-            "model_reg": model_reg,
+#             "train_min_term": train_min_term,
+#             "train_max_term": train_max_term,
+#             "train_primal_term": train_primal_term,
+#             "val_term": val_term,
+#             "backbone_reg": backbone_reg,
+#             "classifier_reg": classifier_reg,
+#             "classifier_copy_reg": classifier_copy_reg,
+#             "train_min_reg": train_min_reg,
+#             "train_max_reg": train_max_reg,
+#             "train_primal_reg": train_primal_reg,
+#             "model_reg": model_reg,
             "train_min_simplex_reg": train_min_simplex_reg,
             "train_max_simplex_reg": train_max_simplex_reg,
             "train_primal_simplex_reg": train_primal_simplex_reg,
@@ -395,6 +393,7 @@ class CelebADROProblem:
     def evaluate_loader(self, classifier, loader, prefix="eval"):
         was_training = self.backbone.training
         self.backbone.eval()
+        classifier.eval()
 
         total_correct = 0
         total_count = 0
@@ -428,6 +427,7 @@ class CelebADROProblem:
 
         if was_training:
             self.backbone.train()
+            classifier.train()
 
         metrics = {
             f"{prefix}/accuracy": total_correct / max(total_count, 1),
