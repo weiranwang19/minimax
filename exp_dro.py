@@ -62,7 +62,7 @@ def init_run(args):
     if hasattr(run, "define_metric"):
         step_metric = "ncwc/cumulative_inner_iters"
         run.define_metric(step_metric)
-        run.define_metric("dro/simplex/*", step_metric=step_metric)
+        run.define_metric("dro-simplex/*", step_metric=step_metric)
         for metric in (
             "ncwc/objective",
             "ncwc/final_diff",
@@ -76,7 +76,7 @@ def init_run(args):
             "dro/train_worst_group_accuracy",
             "dro/val_worst_group_accuracy",
             "dro/train_min_minus_train_max",
-            "dro/simplex/reg_loss",
+            "dro-simplex/reg_loss",
         ):
             run.define_metric(metric, step_metric=step_metric)
     return run
@@ -104,7 +104,7 @@ def parse_args():
     parser.add_argument("--dataset_root", type=Path, default=DEFAULT_DATASET_ROOT)
     parser.add_argument("--target_name", default="Blond_Hair")
     parser.add_argument("--confounder_name", default="Male")
-    parser.add_argument("--batch_size", type=int, default=64)
+    parser.add_argument("--batch_size", type=int, default=256)
     parser.add_argument("--eval_batch_size", type=int, default=8)
     parser.add_argument("--num_workers", type=int, default=4)
     parser.add_argument("--train_fraction", type=float, default=1.0) # keeps that fraction of the official CelebA train split before building the balanced train loader.
@@ -119,14 +119,14 @@ def parse_args():
     parser.add_argument("--eta_min", type=float, default=1e-6)
     # L2 coefficient used for R(x_1), R(y_1), and R(z_1) in the DRO objective.
     parser.add_argument("--weight_decay", type=float, default=0.1)
-    parser.add_argument("--solver_lip_h", type=float, default=1000.0)
-    parser.add_argument("--solver_lip_tau", type=float, default=500.0)
+    parser.add_argument("--solver_lip_h", type=float, default=5000.0)
+    parser.add_argument("--solver_lip_tau", type=float, default=None)
     parser.add_argument("--solver_d_y", type=float, default=100.0)
-    parser.add_argument("--solver_epsilon", type=float, default=1e-4)
-    parser.add_argument("--solver_epsilon_0", type=float, default=1.0)
+    parser.add_argument("--solver_epsilon", type=float, default=1.0)
+    parser.add_argument("--solver_epsilon_0", type=float, default=10.0)
     parser.add_argument("--solver_lr", type=float, default=1.0)
-    parser.add_argument("--solver_max_outer_iters", type=int, default=1000)
-    parser.add_argument("--solver_inner_max_iters", type=int, default=1000)
+    parser.add_argument("--solver_max_outer_iters", type=int, default=100000)
+    parser.add_argument("--solver_inner_max_iters", type=int, default=20)
     parser.add_argument("--monitor_batches", type=int, default=1)
     parser.add_argument("--test_eval_every", type=int, default=10)
     parser.add_argument("--log_every", type=int, default=1)

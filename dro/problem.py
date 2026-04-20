@@ -297,7 +297,7 @@ class CelebADROProblem:
             "dro/train_loss": 0.0,
             "dro/val_loss": 0.0,
             "dro/train_min_minus_train_max": 0.0,
-            "dro/simplex/reg_loss": 0.0,
+            "dro-simplex/reg_loss": 0.0,
         }
         train_group_loss = torch.zeros(self.num_groups, device=self.device)
         val_group_loss = torch.zeros(self.num_groups, device=self.device)
@@ -317,7 +317,7 @@ class CelebADROProblem:
             totals["dro/train_loss"] += float(stats["train_primal_term"].item())
             totals["dro/val_loss"] += float(stats["val_term"].item())
             totals["dro/train_min_minus_train_max"] += float(stats["train_min_minus_train_max"].item())
-            totals["dro/simplex/reg_loss"] += float(stats["train_primal_simplex_reg"].item())
+            totals["dro-simplex/reg_loss"] += float(stats["train_primal_simplex_reg"].item())
             train_group_loss += stats["train_primal_group_loss"]
             val_group_loss += stats["val_group_loss"]
             train_group_correct += stats["train_group_correct"]
@@ -344,11 +344,11 @@ class CelebADROProblem:
         for group_idx in range(self.num_groups):
             metrics[f"dro/train_group_loss_{group_idx}"] = float((train_group_loss[group_idx] / denom).item())
             metrics[f"dro/val_group_loss_{group_idx}"] = float((val_group_loss[group_idx] / denom).item())
-            metrics[f"dro/simplex/train_{group_idx}"] = float(block_view.train_simplex[group_idx].item())
-            metrics[f"dro/simplex/train_copy_{group_idx}"] = float(
+            metrics[f"dro-simplex/train_{group_idx}"] = float(block_view.train_simplex[group_idx].item())
+            metrics[f"dro-simplex/train_copy_{group_idx}"] = float(
                 block_view.train_simplex_copy[group_idx].item()
             )
-            metrics[f"dro/simplex/val_{group_idx}"] = float(block_view.val_simplex[group_idx].item())
+            metrics[f"dro-simplex/val_{group_idx}"] = float(block_view.val_simplex[group_idx].item())
             train_group_count_value = float(train_group_count[group_idx].item())
             if train_group_count_value > 0:
                 train_valid_group_acc.append(float((train_group_correct[group_idx] / train_group_count[group_idx]).item()))
@@ -364,8 +364,10 @@ class CelebADROProblem:
     @torch.no_grad()
     def evaluate_loader(self, classifier, loader, prefix="eval"):
         was_training = self.backbone.training
+        classifier_was_training = getattr(classifier, "training", None)
         self.backbone.eval()
-        classifier.eval()
+        if hasattr(classifier, "eval"):
+            classifier.eval()
 
         total_correct = 0
         total_count = 0
@@ -399,6 +401,7 @@ class CelebADROProblem:
 
         if was_training:
             self.backbone.train()
+        if classifier_was_training:
             classifier.train()
 
         metrics = {
