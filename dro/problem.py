@@ -247,34 +247,16 @@ class CelebADROProblem:
         # y_2 + y_1
         train_primal_term = train_primal_term + classifier_reg
 
-#         # z_2 + y_1
-#         train_min_reg = train_min_simplex_reg + classifier_reg
-#         # y_2 + z_1
-#         train_max_reg = train_max_simplex_reg + classifier_copy_reg
-#         # y_2 + y_1
-#         train_primal_reg = train_primal_simplex_reg + classifier_reg
-#         # x_1 + y_1
-#         model_reg = backbone_reg + classifier_reg
-
         # h = L_V(x_1, y_1, x_2, 0) + R(x_1) + rho * (
         #     L_T(x_1, y_1, z_2, eta) + R(y_1) - L_T(x_1, z_1, y_2, eta) - R(z_1)
         # )
-        h_value = val_term + backbone_reg + self.rho * (train_min_term - train_max_term)
+        train_min_minus_train_max = train_min_term - train_max_term
+        h_value = val_term + backbone_reg + self.rho * train_min_minus_train_max
         return {
             "h": h_value,
-#             "train_min_term": train_min_term,
-#             "train_max_term": train_max_term,
-#             "train_primal_term": train_primal_term,
-#             "val_term": val_term,
-#             "backbone_reg": backbone_reg,
-#             "classifier_reg": classifier_reg,
-#             "classifier_copy_reg": classifier_copy_reg,
-#             "train_min_reg": train_min_reg,
-#             "train_max_reg": train_max_reg,
-#             "train_primal_reg": train_primal_reg,
-#             "model_reg": model_reg,
-            "train_min_simplex_reg": train_min_simplex_reg,
-            "train_max_simplex_reg": train_max_simplex_reg,
+            "train_primal_term": train_primal_term,
+            "val_term": val_term,
+            "train_min_minus_train_max": train_min_minus_train_max,
             "train_primal_simplex_reg": train_primal_simplex_reg,
             "train_primal_group_loss": train_primal_group_loss,
             "train_min_group_loss": train_min_group_loss,
@@ -314,13 +296,8 @@ class CelebADROProblem:
             "dro/h": 0.0,
             "dro/train_loss": 0.0,
             "dro/val_loss": 0.0,
-            "dro/train_min_term": 0.0,
-            "dro/train_max_term": 0.0,
-            "dro/reg_loss": 0.0,
-            "dro/model_reg_loss": 0.0,
-            "dro/simplex_reg_loss": 0.0,
-            "dro/train_min_reg": 0.0,
-            "dro/train_max_reg": 0.0,
+            "dro/train_min_minus_train_max": 0.0,
+            "dro/simplex/reg_loss": 0.0,
         }
         train_group_loss = torch.zeros(self.num_groups, device=self.device)
         val_group_loss = torch.zeros(self.num_groups, device=self.device)
@@ -339,13 +316,8 @@ class CelebADROProblem:
             totals["dro/h"] += float(stats["h"].item())
             totals["dro/train_loss"] += float(stats["train_primal_term"].item())
             totals["dro/val_loss"] += float(stats["val_term"].item())
-            totals["dro/train_min_term"] += float(stats["train_min_term"].item())
-            totals["dro/train_max_term"] += float(stats["train_max_term"].item())
-            totals["dro/reg_loss"] += float(stats["train_primal_reg"].item())
-            totals["dro/model_reg_loss"] += float(stats["model_reg"].item())
-            totals["dro/simplex_reg_loss"] += float(stats["train_primal_simplex_reg"].item())
-            totals["dro/train_min_reg"] += float(stats["train_min_reg"].item())
-            totals["dro/train_max_reg"] += float(stats["train_max_reg"].item())
+            totals["dro/train_min_minus_train_max"] += float(stats["train_min_minus_train_max"].item())
+            totals["dro/simplex/reg_loss"] += float(stats["train_primal_simplex_reg"].item())
             train_group_loss += stats["train_primal_group_loss"]
             val_group_loss += stats["val_group_loss"]
             train_group_correct += stats["train_group_correct"]
@@ -372,11 +344,11 @@ class CelebADROProblem:
         for group_idx in range(self.num_groups):
             metrics[f"dro/train_group_loss_{group_idx}"] = float((train_group_loss[group_idx] / denom).item())
             metrics[f"dro/val_group_loss_{group_idx}"] = float((val_group_loss[group_idx] / denom).item())
-            metrics[f"dro/train_simplex_{group_idx}"] = float(block_view.train_simplex[group_idx].item())
-            metrics[f"dro/train_simplex_copy_{group_idx}"] = float(
+            metrics[f"dro/simplex/train_{group_idx}"] = float(block_view.train_simplex[group_idx].item())
+            metrics[f"dro/simplex/train_copy_{group_idx}"] = float(
                 block_view.train_simplex_copy[group_idx].item()
             )
-            metrics[f"dro/val_simplex_{group_idx}"] = float(block_view.val_simplex[group_idx].item())
+            metrics[f"dro/simplex/val_{group_idx}"] = float(block_view.val_simplex[group_idx].item())
             train_group_count_value = float(train_group_count[group_idx].item())
             if train_group_count_value > 0:
                 train_valid_group_acc.append(float((train_group_correct[group_idx] / train_group_count[group_idx]).item()))

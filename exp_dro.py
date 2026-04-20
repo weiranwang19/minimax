@@ -62,6 +62,7 @@ def init_run(args):
     if hasattr(run, "define_metric"):
         step_metric = "ncwc/cumulative_inner_iters"
         run.define_metric(step_metric)
+        run.define_metric("dro/simplex/*", step_metric=step_metric)
         for metric in (
             "ncwc/objective",
             "ncwc/final_diff",
@@ -74,9 +75,8 @@ def init_run(args):
             "dro/val_accuracy",
             "dro/train_worst_group_accuracy",
             "dro/val_worst_group_accuracy",
-            "dro/reg_loss",
-            "dro/model_reg_loss",
-            "dro/simplex_reg_loss",
+            "dro/train_min_minus_train_max",
+            "dro/simplex/reg_loss",
         ):
             run.define_metric(metric, step_metric=step_metric)
     return run
@@ -180,6 +180,7 @@ def make_progress_logger(run, problem, classifier, test_loader, test_eval_every,
             f"train_acc={metrics.get('dro/train_accuracy', float('nan')):.4f} "
             f"val={metrics.get('dro/val_loss', float('nan')):.4f} "
             f"val_acc={metrics.get('dro/val_accuracy', float('nan')):.4f} "
+            f"train_gap={metrics.get('dro/train_min_minus_train_max', float('nan')):.4f} "
             f"eta={metrics.get('dro/eta', float('nan')):.4f} "
             f"diff={payload.get('final_diff')}",
             flush=True,
