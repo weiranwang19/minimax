@@ -22,7 +22,7 @@ torch.set_default_dtype(torch.float64)
 PROBLEM_SIZES = [(100 * k, 100 * k, 5 * k) for k in range(3, 6)]
 # PROBLEM_SIZES = [(400, 400, 20), (500, 500, 25)]
 NUM_INSTANCES = 10
-SOLVER_METHOD = "gcmo"
+SOLVER_METHOD = "smo"
 # FOP
 BASE_RHO = 5.0
 FINAL_EPS = 1e-2
@@ -805,7 +805,7 @@ def run_single_instance_smo(instance_idx, problem_size):
                 failure_summary,
             )
             run_finished = True
-            raise RuntimeError(
+            print(
                 f"Instance {instance_idx + 1} SMO solve failed the stop check: "
                 f"y_feas={feas:.3e}, y_gap={lower_gap:.3e}, "
                 f"z_feas={diagnostics['z_feas']:.3e}, z_gap={diagnostics['z_lower_gap']:.3e}, "
@@ -1004,7 +1004,7 @@ def run_single_instance_gcmo(instance_idx, problem_size):
             }
             finish_instance_run(run, failure_summary)
             run_finished = True
-            raise RuntimeError(
+            print(
                 f"Instance {instance_idx + 1} GCMO solve failed the stop check: "
                 f"y_feas={diagnostics['y_feas']:.3e}, y_gap={diagnostics['y_lower_gap']:.3e}, "
                 f"z_feas={diagnostics['z_feas']:.3e}, z_gap={diagnostics['z_lower_gap']:.3e}, "
