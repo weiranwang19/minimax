@@ -119,14 +119,14 @@ def parse_args():
     parser.add_argument("--eta_min", type=float, default=1e-6)
     # L2 coefficient used for R(x_1), R(y_1), and R(z_1) in the DRO objective.
     parser.add_argument("--weight_decay", type=float, default=0.1)
-    parser.add_argument("--solver_lip_h", type=float, default=5000.0)
+    parser.add_argument("--solver_lip_h", type=float, default=10000.0)
     parser.add_argument("--solver_lip_tau", type=float, default=None)
     parser.add_argument("--solver_d_y", type=float, default=100.0)
-    parser.add_argument("--solver_epsilon", type=float, default=1.0)
+    parser.add_argument("--solver_epsilon", type=float, default=3.0)
     parser.add_argument("--solver_epsilon_0", type=float, default=10.0)
     parser.add_argument("--solver_lr", type=float, default=1.0)
     parser.add_argument("--solver_max_outer_iters", type=int, default=100000)
-    parser.add_argument("--solver_inner_max_iters", type=int, default=20)
+    parser.add_argument("--solver_inner_max_iters", type=int, default=10)
     parser.add_argument("--monitor_batches", type=int, default=1)
     parser.add_argument("--test_eval_every", type=int, default=10)
     parser.add_argument("--log_every", type=int, default=1)
@@ -227,6 +227,7 @@ def main():
 
     backbone, feature_dim = build_resnet50_backbone(pretrained=not args.train_from_scratch)
     backbone = backbone.to(device)
+    backbone.train()
     classifier = init_classifier(feature_dim, 2, device=device)  # y_1
     eta = torch.nn.Parameter(torch.tensor([args.eta_init], device=device))
     train_simplex = torch.nn.Parameter(
