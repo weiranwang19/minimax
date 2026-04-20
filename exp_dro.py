@@ -114,12 +114,13 @@ def parse_args():
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     parser.add_argument("--train_from_scratch", action="store_true", default=False)
-    parser.add_argument("--rho", type=float, default=1.0)
+    parser.add_argument("--rho", type=float, default=100.0)
     parser.add_argument("--eta_init", type=float, default=10.0)
     parser.add_argument("--eta_min", type=float, default=1e-6)
     # L2 coefficient used for R(x_1), R(y_1), and R(z_1) in the DRO objective.
     parser.add_argument("--weight_decay", type=float, default=0.1)
     parser.add_argument("--solver_lip_h", type=float, default=1000.0)
+    parser.add_argument("--solver_lip_tau", type=float, default=500.0)
     parser.add_argument("--solver_d_y", type=float, default=100.0)
     parser.add_argument("--solver_epsilon", type=float, default=1e-4)
     parser.add_argument("--solver_epsilon_0", type=float, default=1.0)
@@ -289,6 +290,7 @@ def main():
         subproblem_max_iter=args.solver_inner_max_iters,
         verbose=True,
         log_every=args.log_every,
+        lip_tau=args.solver_lip_tau,
         objective_func=problem.monitor_objective,
         metrics_func=problem.monitor_metrics,
         progress_callback=make_progress_logger(

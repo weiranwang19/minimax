@@ -420,6 +420,7 @@ def optimize_NCWC(
     objective_func=None,
     metrics_func=None,
     progress_callback=None,
+    lip_tau=None,
 ):
     """
     Algorithm 6 of FOP for non-convex-weakly-concave minimax problems.
@@ -439,6 +440,8 @@ def optimize_NCWC(
         raise ValueError(f"Invalid subproblem_max_iter: {subproblem_max_iter}")
     if log_every <= 0:
         raise ValueError(f"Invalid log_every: {log_every}")
+    if lip_tau is not None and lip_tau <= 0:
+        raise ValueError(f"Invalid lip_tau: {lip_tau}")
     if objective_func is not None and not callable(objective_func):
         raise TypeError("objective_func must be callable")
     if metrics_func is not None and not callable(metrics_func):
@@ -515,6 +518,7 @@ def optimize_NCWC(
                 lip=lip_k,
                 prox_x=prox_x,
                 prox_y=prox_y,
+                lip_tau=lip_tau,
                 max_iter=inner_max_iter,
                 verbose=verbose,
                 log_every=log_every,
