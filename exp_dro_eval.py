@@ -15,6 +15,7 @@ from utils import project_onto_simplex
 torch.set_default_dtype(torch.float32)
 
 NUM_GROUPS = 4
+LOWER_LEVEL_EVAL_ITER_CAP = 1
 
 
 def parse_args():
@@ -65,6 +66,7 @@ def build_datasets(checkpoint_args):
     seed = int(require_key(checkpoint_args, "seed", "checkpoint args"))
     train_fraction = float(checkpoint_args.get("train_fraction", 1.0))
     val_fraction = float(checkpoint_args.get("val_fraction", 1.0))
+    test_fraction = float(checkpoint_args.get("test_fraction", 1.0))
 
     common = {
         "root_dir": dataset_root,
@@ -84,7 +86,12 @@ def build_datasets(checkpoint_args):
         fraction=val_fraction,
         **common,
     )
-    return train_dataset, val_dataset
+    test_dataset = CelebASplitDataset(
+        split="test",
+        fraction=test_fraction,
+        **common,
+    )
+    return train_dataset, val_dataset, test_dataset
 
 
 @torch.no_grad()
@@ -110,15 +117,22 @@ def cache_split_features(backbone, loader, device, split_name):
     return cached_batches, counts
 
 
-def compute_group_mean_losses(cached_batches, classifier, num_groups):
+def summarize_cached_split(cached_batches, classifier, num_groups):
     dtype = classifier.dtype
     device = classifier.device
     group_loss_sums = [torch.zeros((), device=device, dtype=dtype) for _ in range(num_groups)]
     group_counts = torch.zeros(num_groups, device=device, dtype=dtype)
+    group_correct = torch.zeros(num_groups, device=device, dtype=dtype)
+    total_correct = torch.zeros((), device=device, dtype=dtype)
+    total_count = torch.zeros((), device=device, dtype=dtype)
 
     for features, labels, groups in cached_batches:
         logits = classifier_logits(features, classifier)
         per_sample_loss = F.cross_entropy(logits, labels, reduction="none")
+        predictions = logits.argmax(dim=1)
+        correct = (predictions == labels).to(dtype=dtype)
+        total_correct = total_correct + correct.sum()
+        total_count = total_count + torch.tensor(float(labels.numel()), device=device, dtype=dtype)
         for group_idx in range(num_groups):
             mask = groups == group_idx
             count = mask.sum()
@@ -126,11 +140,20 @@ def compute_group_mean_losses(cached_batches, classifier, num_groups):
                 continue
             group_loss_sums[group_idx] = group_loss_sums[group_idx] + per_sample_loss[mask].sum()
             group_counts[group_idx] = group_counts[group_idx] + count.to(dtype=dtype)
+            group_correct[group_idx] = group_correct[group_idx] + correct[mask].sum()
 
     if torch.any(group_counts <= 0):
         raise ValueError("Encountered an empty group while computing full-dataset group means")
 
-    return torch.stack(group_loss_sums) / group_counts, group_counts
+    group_mean_losses = torch.stack(group_loss_sums) / group_counts
+    group_accuracies = group_correct / group_counts
+    return {
+        "group_mean_losses": group_mean_losses,
+        "group_counts": group_counts,
+        "group_accuracies": group_accuracies,
+        "accuracy": total_correct / torch.clamp(total_count, min=1.0),
+        "worst_group_accuracy": group_accuracies.min(),
+    }
 
 
 def classifier_l2_penalty(classifier, weight_decay):
@@ -144,18 +167,18 @@ def simplex_eta_penalty(simplex_weights, eta_value):
 
 
 def train_ldro_value(cached_batches, classifier, simplex_weights, eta_value, weight_decay):
-    group_mean_losses, group_counts = compute_group_mean_losses(cached_batches, classifier, simplex_weights.numel())
-    objective = torch.dot(simplex_weights, group_mean_losses)
+    split_summary = summarize_cached_split(cached_batches, classifier, simplex_weights.numel())
+    objective = torch.dot(simplex_weights, split_summary["group_mean_losses"])
     objective = objective - simplex_eta_penalty(simplex_weights, eta_value)
     objective = objective + classifier_l2_penalty(classifier, weight_decay)
-    return objective, group_mean_losses, group_counts
+    return objective, split_summary
 
 
-def validation_upper_objective(cached_batches, classifier):
-    group_mean_losses, group_counts = compute_group_mean_losses(cached_batches, classifier, NUM_GROUPS)
+def upper_objective(split_summary):
+    group_mean_losses = split_summary["group_mean_losses"]
     max_group_loss = group_mean_losses.max()
     worst_group_index = int(torch.nonzero(group_mean_losses == max_group_loss, as_tuple=False)[0].item())
-    return max_group_loss, group_mean_losses, group_counts, worst_group_index
+    return max_group_loss, worst_group_index
 
 
 def solve_lower_level_problem(
@@ -221,11 +244,12 @@ def solve_lower_level_problem(
     }
 
 
-def try_build_feature_caches(backbone, train_loader, val_loader, device):
+def try_build_feature_caches(backbone, train_loader, val_loader, test_loader, device):
     try:
         train_cache, train_counts = cache_split_features(backbone, train_loader, device, "train")
         val_cache, val_counts = cache_split_features(backbone, val_loader, device, "val")
-        return device, backbone, train_cache, train_counts, val_cache, val_counts, None
+        test_cache, test_counts = cache_split_features(backbone, test_loader, device, "test")
+        return device, backbone, train_cache, train_counts, val_cache, val_counts, test_cache, test_counts, None
     except RuntimeError as exc:
         if device.type != "cuda" or "out of memory" not in str(exc).lower():
             raise
@@ -235,7 +259,18 @@ def try_build_feature_caches(backbone, train_loader, val_loader, device):
         backbone = backbone.to(cpu_device)
         train_cache, train_counts = cache_split_features(backbone, train_loader, cpu_device, "train")
         val_cache, val_counts = cache_split_features(backbone, val_loader, cpu_device, "val")
-        return cpu_device, backbone, train_cache, train_counts, val_cache, val_counts, exc
+        test_cache, test_counts = cache_split_features(backbone, test_loader, cpu_device, "test")
+        return (
+            cpu_device,
+            backbone,
+            train_cache,
+            train_counts,
+            val_cache,
+            val_counts,
+            test_cache,
+            test_counts,
+            exc,
+        )
 
 
 def main():
@@ -269,7 +304,7 @@ def main():
         raise ValueError(f"Expected {NUM_GROUPS} validation groups, got {val_simplex_tensor.numel()}")
 
     backbone = backbone.to(device)
-    train_dataset, val_dataset = build_datasets(checkpoint_args)
+    train_dataset, val_dataset, test_dataset = build_datasets(checkpoint_args)
     batch_size = max(
         int(checkpoint_args.get("batch_size", 1)),
         int(checkpoint_args.get("eval_batch_size", 1)),
@@ -278,11 +313,23 @@ def main():
     pin_memory = device.type == "cuda"
     train_loader = build_eval_loader(train_dataset, batch_size, num_workers, pin_memory)
     val_loader = build_eval_loader(val_dataset, batch_size, num_workers, pin_memory)
+    test_loader = build_eval_loader(test_dataset, batch_size, num_workers, pin_memory)
 
-    device, backbone, train_cache, train_counts, val_cache, val_counts, cache_fallback_exc = try_build_feature_caches(
+    (
+        device,
+        backbone,
+        train_cache,
+        train_counts,
+        val_cache,
+        val_counts,
+        test_cache,
+        test_counts,
+        cache_fallback_exc,
+    ) = try_build_feature_caches(
         backbone,
         train_loader,
         val_loader,
+        test_loader,
         device,
     )
     if cache_fallback_exc is not None:
@@ -297,21 +344,24 @@ def main():
     weight_decay = float(require_key(checkpoint_args, "weight_decay", "checkpoint args"))
     solver_lip_h = float(require_key(checkpoint_args, "solver_lip_h", "checkpoint args"))
     solver_theta = float(require_key(checkpoint_args, "solver_theta", "checkpoint args"))
-    solver_max_outer_iters = int(require_key(checkpoint_args, "solver_max_outer_iters", "checkpoint args"))
+    requested_solver_max_outer_iters = int(
+        require_key(checkpoint_args, "solver_max_outer_iters", "checkpoint args")
+    )
+    applied_solver_max_outer_iters = min(requested_solver_max_outer_iters, LOWER_LEVEL_EVAL_ITER_CAP)
     solver_lip_tau = checkpoint_args.get("solver_lip_tau")
     solver_log_every = int(checkpoint_args.get("log_every", 1))
 
-    upper_objective, val_group_losses, _, worst_group_index = validation_upper_objective(
-        val_cache,
-        classifier_tensor,
-    )
-    current_train_ldro, train_group_losses, _ = train_ldro_value(
+    current_train_ldro, train_summary = train_ldro_value(
         train_cache,
         classifier_tensor,
         train_simplex_tensor,
         eta_tensor,
         weight_decay,
     )
+    val_summary = summarize_cached_split(val_cache, classifier_tensor, NUM_GROUPS)
+    test_summary = summarize_cached_split(test_cache, classifier_tensor, NUM_GROUPS)
+    val_upper_objective, val_worst_group_index = upper_objective(val_summary)
+    test_upper_objective, test_worst_group_index = upper_objective(test_summary)
     lower_level_solution = solve_lower_level_problem(
         train_cache,
         classifier_copy_tensor,
@@ -321,7 +371,7 @@ def main():
         lip=solver_lip_h,
         lip_tau=solver_lip_tau,
         theta=solver_theta,
-        max_iter=solver_max_outer_iters,
+        max_iter=applied_solver_max_outer_iters,
         log_every=solver_log_every,
     )
     lower_level_gap = float(current_train_ldro.detach().item()) - lower_level_solution["optimized_value"]
@@ -329,18 +379,32 @@ def main():
     print(f"checkpoint_path={args.checkpoint_path.resolve()}")
     print(f"resolved_device={device}")
     print(f"device_note={device_note}")
-    print("eval_split=val")
-    print(f"val_upper_objective={float(upper_objective.detach().item()):.6f}")
-    print(f"val_worst_group_index={worst_group_index}")
+    print("eval_splits=val,test")
+    print(f"train_accuracy={float(train_summary['accuracy'].detach().item()):.6f}")
+    print(f"train_worst_group_accuracy={float(train_summary['worst_group_accuracy'].detach().item()):.6f}")
+    print(f"val_accuracy={float(val_summary['accuracy'].detach().item()):.6f}")
+    print(f"val_worst_group_accuracy={float(val_summary['worst_group_accuracy'].detach().item()):.6f}")
+    print(f"test_accuracy={float(test_summary['accuracy'].detach().item()):.6f}")
+    print(f"test_worst_group_accuracy={float(test_summary['worst_group_accuracy'].detach().item()):.6f}")
+    print(f"val_upper_objective={float(val_upper_objective.detach().item()):.6f}")
+    print(f"val_worst_group_index={val_worst_group_index}")
+    print(f"test_upper_objective={float(test_upper_objective.detach().item()):.6f}")
+    print(f"test_worst_group_index={test_worst_group_index}")
     for group_idx in range(NUM_GROUPS):
-        print(f"val_group_loss_{group_idx}={float(val_group_losses[group_idx].detach().item()):.6f}")
-        print(f"val_group_count_{group_idx}={int(val_counts[group_idx].item())}")
-    print(f"train_ldro_current={float(current_train_ldro.detach().item()):.6f}")
-    for group_idx in range(NUM_GROUPS):
-        print(f"train_group_loss_{group_idx}={float(train_group_losses[group_idx].detach().item()):.6f}")
+        print(f"train_group_accuracy_{group_idx}={float(train_summary['group_accuracies'][group_idx].detach().item()):.6f}")
+        print(f"train_group_loss_{group_idx}={float(train_summary['group_mean_losses'][group_idx].detach().item()):.6f}")
         print(f"train_group_count_{group_idx}={int(train_counts[group_idx].item())}")
+        print(f"val_group_accuracy_{group_idx}={float(val_summary['group_accuracies'][group_idx].detach().item()):.6f}")
+        print(f"val_group_loss_{group_idx}={float(val_summary['group_mean_losses'][group_idx].detach().item()):.6f}")
+        print(f"val_group_count_{group_idx}={int(val_counts[group_idx].item())}")
+        print(f"test_group_accuracy_{group_idx}={float(test_summary['group_accuracies'][group_idx].detach().item()):.6f}")
+        print(f"test_group_loss_{group_idx}={float(test_summary['group_mean_losses'][group_idx].detach().item()):.6f}")
+        print(f"test_group_count_{group_idx}={int(test_counts[group_idx].item())}")
+    print(f"train_ldro_current={float(current_train_ldro.detach().item()):.6f}")
     print(f"train_ldro_optimized={lower_level_solution['optimized_value']:.6f}")
     print(f"train_lower_gap={lower_level_gap:.6f}")
+    print(f"sapd_requested_max_iters={requested_solver_max_outer_iters}")
+    print(f"sapd_applied_max_iters={applied_solver_max_outer_iters}")
     if lower_level_gap < 0.0 and lower_level_gap >= -1e-4:
         print("gap_note=slightly_negative_within_1e-4_tolerance")
     elif lower_level_gap < -1e-4:
