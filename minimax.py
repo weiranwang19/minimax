@@ -339,7 +339,7 @@ class SAPD_SCSC(Optimizer):
         theoretical_num_iter = 33 * max(4/(mu_x * self.tau), 8 / (mu_y * self.sigma))
         theoretical_num_iter = int( max(theoretical_num_iter, 1) )
         self.max_iter = int( min(max_iter, theoretical_num_iter) )
-        print(f"theoretical_num_iter={theoretical_num_iter}, max_iter={self.max_iter}")
+        print(f"theoretical_num_iter={theoretical_num_iter}, max_iter={self.max_iter}, lip={self.lip}")
 
     def get_x(self):
         return self.param_groups[0]["params"]

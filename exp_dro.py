@@ -195,12 +195,12 @@ def parse_args():
     parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     parser.add_argument("--train_from_scratch", action="store_true", default=False)
     parser.add_argument("--rho", type=float, default=100.0)
-    parser.add_argument("--eta_init", type=float, default=10.0)
+    parser.add_argument("--eta_init", type=float, default=5.0)
     parser.add_argument("--eta_min", type=float, default=1e-6)
     # L2 coefficient used for R(x_1), R(y_1), and R(z_1) in the DRO objective.
     parser.add_argument("--weight_decay", type=float, default=0.1)
-    parser.add_argument("--solver_lip_h", type=float, default=5000.0)
-    parser.add_argument("--solver_lip_tau", type=float, default=None)
+    parser.add_argument("--solver_lip_h", type=float, default=1000.0)
+    parser.add_argument("--solver_lip_tau", type=float, default=500.0)
     parser.add_argument("--solver_theta", type=float, default=0.1)
     parser.add_argument("--solver_d_y", type=float, default=100.0)
     parser.add_argument("--solver_epsilon", type=float, default=1.0)
@@ -211,7 +211,7 @@ def parse_args():
     parser.add_argument("--monitor_batches", type=int, default=1)
     parser.add_argument("--test_eval_every", type=int, default=10)
     parser.add_argument("--log_every", type=int, default=1)
-    parser.add_argument("--best_checkpoint_path", type=Path, default=None)
+    parser.add_argument("--best_checkpoint_path", type=Path, default="checkpoints/celeba_dro_best.pt") # if none, no checkpoints will be saved
     parser.add_argument("--wandb_mode", default="online", choices=("online", "offline", "disabled"))
     return parser.parse_args()
 
