@@ -204,7 +204,7 @@ def solve_lower_level_problem(
     simplex_var = torch.nn.Parameter(simplex_init.detach().clone())
 
     def objective():
-        value, _, _ = train_ldro_value(
+        value, _ = train_ldro_value(
             cached_batches,
             classifier_var,
             simplex_var,
@@ -229,7 +229,7 @@ def solve_lower_level_problem(
         log_every=int(log_every),
     )
     solver_stats = solver.run()
-    solved_value, _, _ = train_ldro_value(
+    solved_value, _ = train_ldro_value(
         cached_batches,
         classifier_var,
         simplex_var,
