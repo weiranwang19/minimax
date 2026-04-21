@@ -296,11 +296,28 @@ class SAPD_SCSC(Optimizer):
         https://arxiv.org/pdf/2205.15084
     """
 
-    def __init__(self, params_x, params_y, h_bar, mu_x, mu_y, lip, prox_x, prox_y, lip_tau=None, max_iter=1000, verbose=False, log_every=1):
+    def __init__(
+        self,
+        params_x,
+        params_y,
+        h_bar,
+        mu_x,
+        mu_y,
+        lip,
+        prox_x,
+        prox_y,
+        lip_tau=None,
+        theta=1.0,
+        max_iter=1000,
+        verbose=False,
+        log_every=1,
+    ):
         if max_iter <= 0:
             raise ValueError(f"Invalid max_iter: {max_iter}")
         if log_every <= 0:
             raise ValueError(f"Invalid log_every: {log_every}")
+        if theta < 0:
+            raise ValueError(f"Invalid theta: {theta}")
 
         defaults = {}
         super().__init__([{"params": params_x}, {"params": params_y}], defaults)
@@ -318,7 +335,7 @@ class SAPD_SCSC(Optimizer):
 
         self.sigma =  1 / lip
         self.tau = 1 / lip_tau if lip_tau is not None else 1 / lip
-        self.theta = 1
+        self.theta = theta
         theoretical_num_iter = 33 * max(4/(mu_x * self.tau), 8 / (mu_y * self.sigma))
         theoretical_num_iter = int( max(theoretical_num_iter, 1) )
         self.max_iter = int( min(max_iter, theoretical_num_iter) )
@@ -421,6 +438,7 @@ def optimize_NCWC(
     metrics_func=None,
     progress_callback=None,
     lip_tau=None,
+    theta=1.0,
 ):
     """
     Algorithm 6 of FOP for non-convex-weakly-concave minimax problems.
@@ -519,6 +537,7 @@ def optimize_NCWC(
                 prox_x=prox_x,
                 prox_y=prox_y,
                 lip_tau=lip_tau,
+                theta=theta,
                 max_iter=inner_max_iter,
                 verbose=verbose,
                 log_every=log_every,
