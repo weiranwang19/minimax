@@ -19,8 +19,8 @@ LOWER_LEVEL_EVAL_ITER_CAP = 1
 
 
 def parse_args():
-    parser = argparse.ArgumentParser(description="Evaluate a saved CelebA DRO checkpoint on full datasets")
-    parser.add_argument("checkpoint_path", type=Path)
+    parser = argparse.ArgumentParser(description="Evaluate a directory of CelebA DRO checkpoints and log to wandb")
+    parser.add_argument("checkpoint_dir", type=Path)
     return parser.parse_args()
 
 
@@ -40,6 +40,16 @@ def resolve_runtime_device(checkpoint_args):
             f"checkpoint requested {requested} but CUDA is unavailable; falling back to cpu",
         )
     return torch.device(requested), f"using checkpoint-requested device {requested}"
+
+
+def resolve_wandb():
+    try:
+        import wandb
+    except ImportError as exc:
+        raise RuntimeError(
+            "wandb is required for folder evaluation logging. Run this script in an environment with wandb installed."
+        ) from exc
+    return wandb
 
 
 def to_device_tensor(value, device):
@@ -76,21 +86,9 @@ def build_datasets(checkpoint_args):
         "seed": seed,
         "eval_mode": True,
     }
-    train_dataset = CelebASplitDataset(
-        split="train",
-        fraction=train_fraction,
-        **common,
-    )
-    val_dataset = CelebASplitDataset(
-        split="val",
-        fraction=val_fraction,
-        **common,
-    )
-    test_dataset = CelebASplitDataset(
-        split="test",
-        fraction=test_fraction,
-        **common,
-    )
+    train_dataset = CelebASplitDataset(split="train", fraction=train_fraction, **common)
+    val_dataset = CelebASplitDataset(split="val", fraction=val_fraction, **common)
+    test_dataset = CelebASplitDataset(split="test", fraction=test_fraction, **common)
     return train_dataset, val_dataset, test_dataset
 
 
@@ -239,8 +237,6 @@ def solve_lower_level_problem(
     return {
         "solver_stats": solver_stats,
         "optimized_value": float(solved_value.detach().item()),
-        "optimized_classifier": classifier_var.detach().clone(),
-        "optimized_simplex": simplex_var.detach().clone(),
     }
 
 
@@ -273,19 +269,143 @@ def try_build_feature_caches(backbone, train_loader, val_loader, test_loader, de
         )
 
 
-def main():
-    args = parse_args()
-    checkpoint = torch.load(args.checkpoint_path, map_location="cpu")
-    checkpoint_args = require_key(checkpoint, "args", "checkpoint")
+def collect_checkpoint_paths(checkpoint_dir):
+    if not checkpoint_dir.exists():
+        raise FileNotFoundError(f"Checkpoint directory does not exist: {checkpoint_dir}")
+    if not checkpoint_dir.is_dir():
+        raise NotADirectoryError(f"Expected a checkpoint directory, got: {checkpoint_dir}")
+
+    checkpoint_paths = sorted(
+        {path for pattern in ("*.pt", "*.pth") for path in checkpoint_dir.rglob(pattern)}
+    )
+    if not checkpoint_paths:
+        raise FileNotFoundError(f"No .pt or .pth files found under {checkpoint_dir}")
+    return checkpoint_paths
+
+
+def collect_checkpoint_records(checkpoint_dir):
+    records = []
+    for checkpoint_path in collect_checkpoint_paths(checkpoint_dir):
+        checkpoint = torch.load(checkpoint_path, map_location="cpu")
+        completed_outer_iters = int(require_key(checkpoint, "completed_outer_iters", f"checkpoint {checkpoint_path}"))
+        record = {
+            "path": checkpoint_path,
+            "completed_outer_iters": completed_outer_iters,
+        }
+        if checkpoint.get("call_cumulative_scsc_inner_iters") is not None:
+            record["call_cumulative_scsc_inner_iters"] = int(checkpoint["call_cumulative_scsc_inner_iters"])
+        records.append(record)
+    records.sort(key=lambda item: (item["completed_outer_iters"], str(item["path"])))
+    return records
+
+
+def define_wandb_metrics(run, metric_keys):
+    if not hasattr(run, "define_metric"):
+        return
+    step_metric = "outer_iteration"
+    run.define_metric(step_metric)
+    for key in metric_keys:
+        if key == step_metric:
+            continue
+        run.define_metric(key, step_metric=step_metric)
+
+
+def build_run_metrics(
+    checkpoint_path,
+    device,
+    device_note,
+    train_summary,
+    val_summary,
+    test_summary,
+    train_counts,
+    val_counts,
+    test_counts,
+    current_train_ldro,
+    lower_level_solution,
+    requested_solver_max_outer_iters,
+    applied_solver_max_outer_iters,
+    completed_outer_iters,
+    call_cumulative_scsc_inner_iters,
+):
+    val_upper_objective, val_worst_group_index = upper_objective(val_summary)
+    test_upper_objective, test_worst_group_index = upper_objective(test_summary)
+    lower_level_gap = float(current_train_ldro.detach().item()) - lower_level_solution["optimized_value"]
+
+    metrics = {
+        "outer_iteration": int(completed_outer_iters),
+        "train_accuracy": float(train_summary["accuracy"].detach().item()),
+        "train_worst_group_accuracy": float(train_summary["worst_group_accuracy"].detach().item()),
+        "val_accuracy": float(val_summary["accuracy"].detach().item()),
+        "val_worst_group_accuracy": float(val_summary["worst_group_accuracy"].detach().item()),
+        "test_accuracy": float(test_summary["accuracy"].detach().item()),
+        "test_worst_group_accuracy": float(test_summary["worst_group_accuracy"].detach().item()),
+        "val_upper_objective": float(val_upper_objective.detach().item()),
+        "val_worst_group_index": val_worst_group_index,
+        "test_upper_objective": float(test_upper_objective.detach().item()),
+        "test_worst_group_index": test_worst_group_index,
+        "train_ldro_current": float(current_train_ldro.detach().item()),
+        "train_ldro_optimized": lower_level_solution["optimized_value"],
+        "train_lower_gap": lower_level_gap,
+        "sapd_requested_max_iters": requested_solver_max_outer_iters,
+        "sapd_applied_max_iters": applied_solver_max_outer_iters,
+        "sapd_num_outer_iters": lower_level_solution["solver_stats"]["num_outer_iters"],
+        "sapd_num_inner_iters": lower_level_solution["solver_stats"]["num_inner_iters"],
+        "sapd_final_delta": lower_level_solution["solver_stats"]["final_delta"],
+    }
+    if call_cumulative_scsc_inner_iters is not None:
+        metrics["cumulative_inner_iters"] = int(call_cumulative_scsc_inner_iters)
+    if lower_level_gap < 0.0 and lower_level_gap >= -1e-4:
+        metrics["gap_note_code"] = 1.0
+    elif lower_level_gap < -1e-4:
+        metrics["gap_note_code"] = 2.0
+    else:
+        metrics["gap_note_code"] = 0.0
+
+    for group_idx in range(NUM_GROUPS):
+        metrics[f"train_group_accuracy_{group_idx}"] = float(train_summary["group_accuracies"][group_idx].detach().item())
+        metrics[f"train_group_loss_{group_idx}"] = float(train_summary["group_mean_losses"][group_idx].detach().item())
+        metrics[f"train_group_count_{group_idx}"] = int(train_counts[group_idx].item())
+        metrics[f"val_group_accuracy_{group_idx}"] = float(val_summary["group_accuracies"][group_idx].detach().item())
+        metrics[f"val_group_loss_{group_idx}"] = float(val_summary["group_mean_losses"][group_idx].detach().item())
+        metrics[f"val_group_count_{group_idx}"] = int(val_counts[group_idx].item())
+        metrics[f"test_group_accuracy_{group_idx}"] = float(test_summary["group_accuracies"][group_idx].detach().item())
+        metrics[f"test_group_loss_{group_idx}"] = float(test_summary["group_mean_losses"][group_idx].detach().item())
+        metrics[f"test_group_count_{group_idx}"] = int(test_counts[group_idx].item())
+
+    metadata = {
+        "checkpoint_path": str(checkpoint_path.resolve()),
+        "resolved_device": str(device),
+        "device_note": device_note,
+    }
+    return metrics, metadata
+
+
+def print_checkpoint_metrics(metadata, metrics):
+    print(f"checkpoint_path={metadata['checkpoint_path']}")
+    print(f"resolved_device={metadata['resolved_device']}")
+    print(f"device_note={metadata['device_note']}")
+    for key, value in metrics.items():
+        print(f"{key}={value}")
+
+
+def evaluate_checkpoint(checkpoint_path):
+    checkpoint = torch.load(checkpoint_path, map_location="cpu")
+    checkpoint_args = require_key(checkpoint, "args", f"checkpoint {checkpoint_path}")
     if not isinstance(checkpoint_args, dict):
-        raise TypeError("checkpoint['args'] must be a dict")
+        raise TypeError(f"checkpoint['args'] must be a dict for {checkpoint_path}")
 
     device, device_note = resolve_runtime_device(checkpoint_args)
-    backbone_state_dict = require_key(checkpoint, "backbone_state_dict", "checkpoint")
-    classifier_tensor = to_device_tensor(require_key(checkpoint, "classifier", "checkpoint"), device)
-    eta_tensor = to_device_tensor(require_key(checkpoint, "eta", "checkpoint"), device)
-    train_simplex_tensor = to_device_tensor(require_key(checkpoint, "train_simplex", "checkpoint"), device)
-    val_simplex_tensor = to_device_tensor(require_key(checkpoint, "val_simplex", "checkpoint"), device)
+    backbone_state_dict = require_key(checkpoint, "backbone_state_dict", f"checkpoint {checkpoint_path}")
+    classifier_tensor = to_device_tensor(require_key(checkpoint, "classifier", f"checkpoint {checkpoint_path}"), device)
+    eta_tensor = to_device_tensor(require_key(checkpoint, "eta", f"checkpoint {checkpoint_path}"), device)
+    train_simplex_tensor = to_device_tensor(
+        require_key(checkpoint, "train_simplex", f"checkpoint {checkpoint_path}"),
+        device,
+    )
+    val_simplex_tensor = to_device_tensor(
+        require_key(checkpoint, "val_simplex", f"checkpoint {checkpoint_path}"),
+        device,
+    )
     classifier_copy_tensor = to_device_tensor(checkpoint.get("classifier_copy", checkpoint["classifier"]), device)
     train_simplex_copy_tensor = to_device_tensor(
         checkpoint.get("train_simplex_copy", checkpoint["train_simplex"]),
@@ -305,10 +425,7 @@ def main():
 
     backbone = backbone.to(device)
     train_dataset, val_dataset, test_dataset = build_datasets(checkpoint_args)
-    batch_size = max(
-        int(checkpoint_args.get("batch_size", 1)),
-        int(checkpoint_args.get("eval_batch_size", 1)),
-    )
+    batch_size = max(int(checkpoint_args.get("batch_size", 1)), int(checkpoint_args.get("eval_batch_size", 1)))
     num_workers = int(checkpoint_args.get("num_workers", 0))
     pin_memory = device.type == "cuda"
     train_loader = build_eval_loader(train_dataset, batch_size, num_workers, pin_memory)
@@ -341,11 +458,11 @@ def main():
         train_simplex_copy_tensor = train_simplex_copy_tensor.to(device)
         device_note = f"{device_note}; feature cache fallback forced cpu execution"
 
-    weight_decay = float(require_key(checkpoint_args, "weight_decay", "checkpoint args"))
-    solver_lip_h = float(require_key(checkpoint_args, "solver_lip_h", "checkpoint args"))
-    solver_theta = float(require_key(checkpoint_args, "solver_theta", "checkpoint args"))
+    weight_decay = float(require_key(checkpoint_args, "weight_decay", f"checkpoint args {checkpoint_path}"))
+    solver_lip_h = float(require_key(checkpoint_args, "solver_lip_h", f"checkpoint args {checkpoint_path}"))
+    solver_theta = float(require_key(checkpoint_args, "solver_theta", f"checkpoint args {checkpoint_path}"))
     requested_solver_max_outer_iters = int(
-        require_key(checkpoint_args, "solver_max_outer_iters", "checkpoint args")
+        require_key(checkpoint_args, "solver_max_outer_iters", f"checkpoint args {checkpoint_path}")
     )
     applied_solver_max_outer_iters = min(requested_solver_max_outer_iters, LOWER_LEVEL_EVAL_ITER_CAP)
     solver_lip_tau = checkpoint_args.get("solver_lip_tau")
@@ -360,8 +477,6 @@ def main():
     )
     val_summary = summarize_cached_split(val_cache, classifier_tensor, NUM_GROUPS)
     test_summary = summarize_cached_split(test_cache, classifier_tensor, NUM_GROUPS)
-    val_upper_objective, val_worst_group_index = upper_objective(val_summary)
-    test_upper_objective, test_worst_group_index = upper_objective(test_summary)
     lower_level_solution = solve_lower_level_problem(
         train_cache,
         classifier_copy_tensor,
@@ -374,44 +489,61 @@ def main():
         max_iter=applied_solver_max_outer_iters,
         log_every=solver_log_every,
     )
-    lower_level_gap = float(current_train_ldro.detach().item()) - lower_level_solution["optimized_value"]
 
-    print(f"checkpoint_path={args.checkpoint_path.resolve()}")
-    print(f"resolved_device={device}")
-    print(f"device_note={device_note}")
-    print("eval_splits=val,test")
-    print(f"train_accuracy={float(train_summary['accuracy'].detach().item()):.6f}")
-    print(f"train_worst_group_accuracy={float(train_summary['worst_group_accuracy'].detach().item()):.6f}")
-    print(f"val_accuracy={float(val_summary['accuracy'].detach().item()):.6f}")
-    print(f"val_worst_group_accuracy={float(val_summary['worst_group_accuracy'].detach().item()):.6f}")
-    print(f"test_accuracy={float(test_summary['accuracy'].detach().item()):.6f}")
-    print(f"test_worst_group_accuracy={float(test_summary['worst_group_accuracy'].detach().item()):.6f}")
-    print(f"val_upper_objective={float(val_upper_objective.detach().item()):.6f}")
-    print(f"val_worst_group_index={val_worst_group_index}")
-    print(f"test_upper_objective={float(test_upper_objective.detach().item()):.6f}")
-    print(f"test_worst_group_index={test_worst_group_index}")
-    for group_idx in range(NUM_GROUPS):
-        print(f"train_group_accuracy_{group_idx}={float(train_summary['group_accuracies'][group_idx].detach().item()):.6f}")
-        print(f"train_group_loss_{group_idx}={float(train_summary['group_mean_losses'][group_idx].detach().item()):.6f}")
-        print(f"train_group_count_{group_idx}={int(train_counts[group_idx].item())}")
-        print(f"val_group_accuracy_{group_idx}={float(val_summary['group_accuracies'][group_idx].detach().item()):.6f}")
-        print(f"val_group_loss_{group_idx}={float(val_summary['group_mean_losses'][group_idx].detach().item()):.6f}")
-        print(f"val_group_count_{group_idx}={int(val_counts[group_idx].item())}")
-        print(f"test_group_accuracy_{group_idx}={float(test_summary['group_accuracies'][group_idx].detach().item()):.6f}")
-        print(f"test_group_loss_{group_idx}={float(test_summary['group_mean_losses'][group_idx].detach().item()):.6f}")
-        print(f"test_group_count_{group_idx}={int(test_counts[group_idx].item())}")
-    print(f"train_ldro_current={float(current_train_ldro.detach().item()):.6f}")
-    print(f"train_ldro_optimized={lower_level_solution['optimized_value']:.6f}")
-    print(f"train_lower_gap={lower_level_gap:.6f}")
-    print(f"sapd_requested_max_iters={requested_solver_max_outer_iters}")
-    print(f"sapd_applied_max_iters={applied_solver_max_outer_iters}")
-    if lower_level_gap < 0.0 and lower_level_gap >= -1e-4:
-        print("gap_note=slightly_negative_within_1e-4_tolerance")
-    elif lower_level_gap < -1e-4:
-        print("gap_note=negative_gap_exceeds_1e-4_tolerance")
-    print(f"sapd_num_outer_iters={lower_level_solution['solver_stats']['num_outer_iters']}")
-    print(f"sapd_num_inner_iters={lower_level_solution['solver_stats']['num_inner_iters']}")
-    print(f"sapd_final_delta={lower_level_solution['solver_stats']['final_delta']}")
+    metrics, metadata = build_run_metrics(
+        checkpoint_path=checkpoint_path,
+        device=device,
+        device_note=device_note,
+        train_summary=train_summary,
+        val_summary=val_summary,
+        test_summary=test_summary,
+        train_counts=train_counts,
+        val_counts=val_counts,
+        test_counts=test_counts,
+        current_train_ldro=current_train_ldro,
+        lower_level_solution=lower_level_solution,
+        requested_solver_max_outer_iters=requested_solver_max_outer_iters,
+        applied_solver_max_outer_iters=applied_solver_max_outer_iters,
+        completed_outer_iters=int(require_key(checkpoint, "completed_outer_iters", f"checkpoint {checkpoint_path}")),
+        call_cumulative_scsc_inner_iters=checkpoint.get("call_cumulative_scsc_inner_iters"),
+    )
+    return metrics, metadata
+
+
+def main():
+    args = parse_args()
+    checkpoint_records = collect_checkpoint_records(args.checkpoint_dir)
+    wandb = resolve_wandb()
+    run = wandb.init(
+        project="minimax",
+        name=f"dro_eval_{args.checkpoint_dir.name}",
+        config={
+            "checkpoint_dir": str(args.checkpoint_dir.resolve()),
+            "num_checkpoints": len(checkpoint_records),
+            "lower_level_eval_iter_cap": LOWER_LEVEL_EVAL_ITER_CAP,
+        },
+        reinit=True,
+    )
+
+    metrics_defined = False
+    for checkpoint_record in checkpoint_records:
+        checkpoint_path = checkpoint_record["path"]
+        print(
+            f"evaluating checkpoint={checkpoint_path} outer_iteration={checkpoint_record['completed_outer_iters']}",
+            flush=True,
+        )
+        metrics, metadata = evaluate_checkpoint(checkpoint_path)
+        if not metrics_defined:
+            define_wandb_metrics(run, metrics.keys())
+            metrics_defined = True
+        run.log(metrics)
+        print_checkpoint_metrics(metadata, metrics)
+
+    if hasattr(run, "summary"):
+        run.summary["last_outer_iteration"] = checkpoint_records[-1]["completed_outer_iters"]
+        run.summary["last_checkpoint_path"] = str(checkpoint_records[-1]["path"].resolve())
+        run.summary["num_checkpoints_evaluated"] = len(checkpoint_records)
+    run.finish()
 
 
 if __name__ == "__main__":

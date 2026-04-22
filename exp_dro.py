@@ -16,6 +16,7 @@ from utils import project_onto_simplex
 torch.set_default_dtype(torch.float32)
 
 DEFAULT_DATASET_ROOT = Path(__file__).resolve().parent / "celeba"
+DEFAULT_CHECKPOINT_ROOT = Path(__file__).resolve().parent / "minimax-ckpts"
 WANDB_PROJECT = "minimax"
 
 # Implementation note for the bilevel variable mapping used below:
@@ -91,8 +92,15 @@ def ensure_finite_metrics(metrics, context, solver_lip_h):
             )
 
 
-def resolve_best_checkpoint_path(args):
-    return args.best_checkpoint_path
+def resolve_checkpoint_dir(args):
+    ckpt_folder_name = args.ckpt_folder_name
+    if ckpt_folder_name is None:
+        return None
+    if isinstance(ckpt_folder_name, str):
+        ckpt_folder_name = ckpt_folder_name.strip()
+        if not ckpt_folder_name or ckpt_folder_name.lower() == "none":
+            return None
+    return DEFAULT_CHECKPOINT_ROOT / ckpt_folder_name
 
 
 def _module_state_dict_to_cpu(module):
@@ -109,10 +117,10 @@ def _serialize_args(args):
     return serialized
 
 
-class _BestCheckpointSaver:
+class _EvalCheckpointSaver:
     def __init__(
         self,
-        checkpoint_path,
+        checkpoint_dir,
         args,
         backbone,
         classifier,
@@ -122,7 +130,7 @@ class _BestCheckpointSaver:
         classifier_copy,
         train_simplex_copy,
     ):
-        self.checkpoint_path = Path(checkpoint_path)
+        self.checkpoint_dir = Path(checkpoint_dir)
         self.args = args
         self.backbone = backbone
         self.classifier = classifier
@@ -131,30 +139,31 @@ class _BestCheckpointSaver:
         self.val_simplex = val_simplex
         self.classifier_copy = classifier_copy
         self.train_simplex_copy = train_simplex_copy
-        self.best_val_accuracy = None
-        self.best_completed_outer_iters = None
-        self.best_cumulative_inner_iters = None
+        self.num_checkpoints_saved = 0
+        self.last_checkpoint_path = None
 
-    def maybe_save(self, payload):
-        metrics = payload.get("metrics") or {}
-        if "dro/val_accuracy" not in metrics:
-            return False
+    def save(self, payload, test_metrics):
+        metrics = dict(payload.get("metrics") or {})
+        metrics.update(test_metrics)
+        completed_outer_iters = payload.get("completed_outer_iters")
+        cumulative_inner_iters = payload.get("call_cumulative_scsc_inner_iters")
+        if completed_outer_iters is None:
+            raise ValueError("Cannot save checkpoint without completed_outer_iters")
 
-        val_accuracy = float(metrics["dro/val_accuracy"])
-        if self.best_val_accuracy is not None and val_accuracy <= self.best_val_accuracy:
-            return False
-
-        self.checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
+        filename = f"outer_{int(completed_outer_iters):06d}"
+        if cumulative_inner_iters is not None:
+            filename += f"_inner_{int(cumulative_inner_iters):06d}"
+        checkpoint_path = self.checkpoint_dir / f"{filename}.pt"
+        self.checkpoint_dir.mkdir(parents=True, exist_ok=True)
         torch.save(
             {
                 "args": _serialize_args(self.args),
-                "best_metric_name": "dro/val_accuracy",
-                "best_metric_value": val_accuracy,
-                "completed_outer_iters": payload.get("completed_outer_iters"),
-                "call_cumulative_scsc_inner_iters": payload.get("call_cumulative_scsc_inner_iters"),
+                "completed_outer_iters": completed_outer_iters,
+                "call_cumulative_scsc_inner_iters": cumulative_inner_iters,
                 "final_diff": payload.get("final_diff"),
                 "objective": payload.get("objective"),
-                "metrics": dict(metrics),
+                "metrics": metrics,
+                "test_metrics": dict(test_metrics),
                 "backbone_state_dict": _module_state_dict_to_cpu(self.backbone),
                 "classifier": self.classifier.detach().cpu().clone(),
                 "eta": self.eta.detach().cpu().clone(),
@@ -163,12 +172,11 @@ class _BestCheckpointSaver:
                 "classifier_copy": self.classifier_copy.detach().cpu().clone(),
                 "train_simplex_copy": self.train_simplex_copy.detach().cpu().clone(),
             },
-            self.checkpoint_path,
+            checkpoint_path,
         )
-        self.best_val_accuracy = val_accuracy
-        self.best_completed_outer_iters = payload.get("completed_outer_iters")
-        self.best_cumulative_inner_iters = payload.get("call_cumulative_scsc_inner_iters")
-        return True
+        self.num_checkpoints_saved += 1
+        self.last_checkpoint_path = checkpoint_path
+        return checkpoint_path
 
 
 def set_seed(seed):
@@ -182,6 +190,7 @@ def set_seed(seed):
 def parse_args():
     parser = argparse.ArgumentParser(description="Stochastic NCWC CelebA DRO experiment")
     parser.add_argument("--dataset_root", type=Path, default=DEFAULT_DATASET_ROOT)
+    parser.add_argument("--ckpt_folder_name", default=None)
     parser.add_argument("--target_name", default="Blond_Hair")
     parser.add_argument("--confounder_name", default="Male")
     parser.add_argument("--batch_size", type=int, default=256)
@@ -211,7 +220,6 @@ def parse_args():
     parser.add_argument("--monitor_batches", type=int, default=1)
     parser.add_argument("--test_eval_every", type=int, default=10)
     parser.add_argument("--log_every", type=int, default=1)
-    parser.add_argument("--best_checkpoint_path", type=Path, default="checkpoints/celeba_dro_best.pt") # if none, no checkpoints will be saved
     parser.add_argument("--wandb_mode", default="online", choices=("online", "offline", "disabled"))
     return parser.parse_args()
 
@@ -223,13 +231,6 @@ def make_progress_logger(run, problem, classifier, test_loader, test_eval_every,
         objective = payload.get("objective")
         if metrics:
             ensure_finite_metrics(metrics, "NCWC progress", solver_lip_h)
-            if checkpoint_saver is not None and checkpoint_saver.maybe_save(payload):
-                print(
-                    f"saved best checkpoint outer={payload.get('completed_outer_iters')} "
-                    f"val_acc={checkpoint_saver.best_val_accuracy:.4f} "
-                    f"path={checkpoint_saver.checkpoint_path}",
-                    flush=True,
-                )
         if objective is not None and not math.isfinite(float(objective)):
             raise RuntimeError(
                 f"Non-finite objective detected during NCWC progress: objective={objective}. "
@@ -258,6 +259,13 @@ def make_progress_logger(run, problem, classifier, test_loader, test_eval_every,
                 solver_lip_h,
             )
             log_payload.update(test_metrics)
+            if checkpoint_saver is not None:
+                checkpoint_path = checkpoint_saver.save(payload, test_metrics)
+                print(
+                    f"saved checkpoint outer={completed_outer_iters} "
+                    f"path={checkpoint_path}",
+                    flush=True,
+                )
 
         run.log(log_payload)
         if completed_outer_iters is None:
@@ -344,11 +352,11 @@ def main():
         weight_decay=args.weight_decay,
         device=device,
     )
-    checkpoint_path = resolve_best_checkpoint_path(args)
+    checkpoint_dir = resolve_checkpoint_dir(args)
     checkpoint_saver = None
-    if checkpoint_path is not None:
-        checkpoint_saver = _BestCheckpointSaver(
-            checkpoint_path=checkpoint_path,
+    if checkpoint_dir is not None:
+        checkpoint_saver = _EvalCheckpointSaver(
+            checkpoint_dir=checkpoint_dir,
             args=args,
             backbone=backbone,
             classifier=classifier,
@@ -438,12 +446,9 @@ def main():
         "instance/test_loss": test_metrics["test/loss"],
     }
     summary.update({f"instance/{key.replace('/', '_')}": value for key, value in test_metrics.items()})
-    if checkpoint_saver is not None:
-        summary["instance/best_val_accuracy"] = checkpoint_saver.best_val_accuracy
-        summary["instance/best_checkpoint_outer_iters"] = checkpoint_saver.best_completed_outer_iters
-        summary["instance/best_checkpoint_cumulative_inner_iters"] = checkpoint_saver.best_cumulative_inner_iters
-    if checkpoint_saver is not None and checkpoint_saver.best_val_accuracy is not None:
-        summary["instance/best_checkpoint_path"] = str(checkpoint_saver.checkpoint_path)
+    summary["instance/checkpoints_saved"] = 0 if checkpoint_saver is None else checkpoint_saver.num_checkpoints_saved
+    if checkpoint_saver is not None and checkpoint_saver.last_checkpoint_path is not None:
+        summary["instance/last_checkpoint_path"] = str(checkpoint_saver.last_checkpoint_path)
     if hasattr(run, "summary"):
         for key, value in summary.items():
             run.summary[key] = value
@@ -463,11 +468,9 @@ def main():
         f"test_worst={test_metrics['test/worst_group_accuracy']:.4f} "
         f"eta={final_metrics['dro/eta']:.4f} "
     )
-    if checkpoint_saver is not None:
-        final_message += (
-            f"best_val_acc={checkpoint_saver.best_val_accuracy:.4f} "
-            f"best_ckpt={checkpoint_saver.checkpoint_path} "
-        )
+    final_message += f"saved_ckpts={0 if checkpoint_saver is None else checkpoint_saver.num_checkpoints_saved} "
+    if checkpoint_saver is not None and checkpoint_saver.last_checkpoint_path is not None:
+        final_message += f"last_ckpt={checkpoint_saver.last_checkpoint_path} "
     final_message += f"loss_decreased={int(loss_decreased)} elapsed={elapsed:.1f}s"
     print(final_message, flush=True)
 
