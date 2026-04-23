@@ -19,10 +19,13 @@ torch.set_default_dtype(torch.float64)
 
 
 # Section 4.2 / Table 2 experiment controls. `PROBLEM_SIZES` is the actual grid of (n, m, l) values; the rest are algorithmic parameters that can be tuned for better performance.
-PROBLEM_SIZES = [(100 * k, 100 * k, 5 * k) for k in range(3, 6)]
+PROBLEM_SIZES = [(100 * k, 100 * k, 5 * k) for k in range(4, 6)]
 # PROBLEM_SIZES = [(400, 400, 20), (500, 500, 25)]
-NUM_INSTANCES = 10
-SOLVER_METHOD = "smo"
+# Zero-based instance indices. Edit this list to rerun only failed/interrupted instances
+# while keeping the exact same sampled instance for each (n, m, l) across methods.
+NUM_INSTANCES = list(range(5))
+# NUM_INSTANCES = [2,3,4]
+SOLVER_METHOD = "gcmo"
 # FOP
 BASE_RHO = 5.0
 FINAL_EPS = 1e-2
@@ -170,7 +173,7 @@ def _configure_run_metrics(run):
         run.define_metric(metric_name, step_metric="gcmo/stage/index")
 
 
-def init_instance_run(problem_size, instance_idx):
+def init_instance_run(problem_size, instance_idx, instance_position, num_instances):
     wandb = _resolve_wandb()
     if wandb is None:
         return _NoOpRun()
@@ -180,6 +183,8 @@ def init_instance_run(problem_size, instance_idx):
         "solver_method": SOLVER_METHOD,
         "problem_size": {"n": n_val, "m": m_val, "l": l_val},
         "instance_idx": instance_idx,
+        "instance_position": instance_position,
+        "num_instances": num_instances,
         "seed": SEED,
         "base_rho": BASE_RHO,
         "final_eps": FINAL_EPS,
@@ -200,7 +205,7 @@ def init_instance_run(problem_size, instance_idx):
         entity=WANDB_ENTITY,
         mode=WANDB_MODE,
         group=f"{SOLVER_METHOD}-n{n_val}-m{m_val}-l{l_val}",
-        name=f"{SOLVER_METHOD}-n{n_val}-m{m_val}-l{l_val}-inst{instance_idx + 1}-seed{SEED}",
+        name=f"{SOLVER_METHOD}-n{n_val}-m{m_val}-l{l_val}-idx{instance_idx}-seed{SEED}",
         tags=list(WANDB_TAGS),
         config=config,
         reinit=True,
@@ -349,6 +354,14 @@ def _make_instance_generator(problem_size, instance_idx):
     return generator
 
 
+def resolve_instance_indices():
+    return [int(instance_idx) for instance_idx in NUM_INSTANCES]
+
+
+def format_instance_label(instance_idx, instance_position, num_instances):
+    return f"idx={instance_idx} ({instance_position}/{num_instances})"
+
+
 def sample_interior_box_point(dim, generator=None):
     """Sample y_hat strictly inside the box so the lower KKT construction is simple."""
     while True:
@@ -368,6 +381,8 @@ def generate_instance(problem_size, instance_idx):
     global C, D, D_TILDE, A_MAT, B_MAT, B_VEC, Y_HAT
     global CURRENT_L_G
 
+    # The seed depends only on (n, m, l, instance_idx), so the same explicit instance
+    # index reproduces the same random problem across solver methods.
     # Page 12 top
     N, M, L = problem_size
     generator = _make_instance_generator(problem_size, instance_idx)
@@ -480,7 +495,7 @@ def build_gcmo_diagnostics(x_vec, y_vec, z_vec, lambda_vec, z_lambda_vec, solver
     return diagnostics
 
 
-def run_single_instance_fop(instance_idx, problem_size):
+def run_single_instance_fop(instance_idx, problem_size, instance_position, num_instances):
     """
     Run the practical outer loop for one random instance with the FOP solver.
 
@@ -490,7 +505,8 @@ def run_single_instance_fop(instance_idx, problem_size):
     3. calls the practical FOP wrapper in `bilevel_solvers.py`,
     4. checks feasibility and the lower-level optimality gap.
     """
-    run = init_instance_run(problem_size, instance_idx)
+    instance_label = format_instance_label(instance_idx, instance_position, num_instances)
+    run = init_instance_run(problem_size, instance_idx, instance_position, num_instances)
     start_time = time.perf_counter()
     run_finished = False
 
@@ -553,7 +569,7 @@ def run_single_instance_fop(instance_idx, problem_size):
 
         if VERBOSE:
             print(
-                f"  Instance {instance_idx + 1}: outer={payload['stage_index']} "
+                f"  Instance {instance_label}: outer={payload['stage_index']} "
                 f"warm_start_iters={payload['warm_start_iters']}/{payload['warm_start_target_iters']} "
                 f"warm_start_capped={int(payload['warm_start_capped'])} "
                 f"solver_outer={payload['subproblem_stats']['num_outer_iters']} "
@@ -591,7 +607,7 @@ def run_single_instance_fop(instance_idx, problem_size):
             progress_callback=ncwc_progress_callback,
             verbose=VERBOSE,
             log_every=SOLVER_LOG_EVERY,
-            outer_desc=f"Instance {instance_idx + 1}/{NUM_INSTANCES}",
+            outer_desc=f"Instance {instance_label}",
         )
 
         final_metrics = solver_result["final_metrics"]
@@ -629,7 +645,7 @@ def run_single_instance_fop(instance_idx, problem_size):
         )
         run_finished = True
         raise RuntimeError(
-            f"Instance {instance_idx + 1} did not satisfy the stopping rule after {MAX_OUTER_ITERS} outer iterations"
+            f"Instance {instance_label} did not satisfy the stopping rule after {MAX_OUTER_ITERS} outer iterations"
         )
     except Exception:
         if not run_finished:
@@ -644,9 +660,10 @@ def run_single_instance_fop(instance_idx, problem_size):
         raise
 
 
-def run_single_instance_smo(instance_idx, problem_size):
+def run_single_instance_smo(instance_idx, problem_size, instance_position, num_instances):
     """Run one SMO solve for the current random instance."""
-    run = init_instance_run(problem_size, instance_idx)
+    instance_label = format_instance_label(instance_idx, instance_position, num_instances)
+    run = init_instance_run(problem_size, instance_idx, instance_position, num_instances)
     start_time = time.perf_counter()
     run_finished = False
     initial_x = torch.zeros(N)
@@ -775,7 +792,7 @@ def run_single_instance_smo(instance_idx, problem_size):
 
         if VERBOSE:
             print(
-                f"  Instance {instance_idx + 1}: smo_outer={solver_result['num_outer_iters']} "
+                f"  Instance {instance_label}: smo_outer={solver_result['num_outer_iters']} "
                 f"y_feas={feas:.3e} y_gap={lower_gap:.3e} "
                 f"z_feas={diagnostics['z_feas']:.3e} z_gap={diagnostics['z_lower_gap']:.3e} "
                 f"yz_dist={diagnostics['yz_distance']:.3e} upper={current_upper:.3e}",
@@ -806,7 +823,7 @@ def run_single_instance_smo(instance_idx, problem_size):
             )
             run_finished = True
             print(
-                f"Instance {instance_idx + 1} SMO solve failed the stop check: "
+                f"Instance {instance_label} SMO solve failed the stop check: "
                 f"y_feas={feas:.3e}, y_gap={lower_gap:.3e}, "
                 f"z_feas={diagnostics['z_feas']:.3e}, z_gap={diagnostics['z_lower_gap']:.3e}, "
                 f"yz_dist={diagnostics['yz_distance']:.3e}, "
@@ -857,9 +874,10 @@ def run_single_instance_smo(instance_idx, problem_size):
         raise
 
 
-def run_single_instance_gcmo(instance_idx, problem_size):
+def run_single_instance_gcmo(instance_idx, problem_size, instance_position, num_instances):
     """Run one GCMO solve for the current random instance."""
-    run = init_instance_run(problem_size, instance_idx)
+    instance_label = format_instance_label(instance_idx, instance_position, num_instances)
+    run = init_instance_run(problem_size, instance_idx, instance_position, num_instances)
     start_time = time.perf_counter()
     run_finished = False
     initial_x = torch.zeros(N)
@@ -968,7 +986,7 @@ def run_single_instance_gcmo(instance_idx, problem_size):
 
         if VERBOSE:
             print(
-                f"  Instance {instance_idx + 1}: gcmo_outer={diagnostics['subproblem_num_outer_iters']} "
+                f"  Instance {instance_label}: gcmo_outer={diagnostics['subproblem_num_outer_iters']} "
                 f"y_feas={diagnostics['y_feas']:.3e} y_gap={diagnostics['y_lower_gap']:.3e} "
                 f"z_feas={diagnostics['z_feas']:.3e} z_gap={diagnostics['z_lower_gap']:.3e} "
                 f"yz_dist={diagnostics['yz_distance']:.3e} "
@@ -1005,7 +1023,7 @@ def run_single_instance_gcmo(instance_idx, problem_size):
             finish_instance_run(run, failure_summary)
             run_finished = True
             print(
-                f"Instance {instance_idx + 1} GCMO solve failed the stop check: "
+                f"Instance {instance_label} GCMO solve failed the stop check: "
                 f"y_feas={diagnostics['y_feas']:.3e}, y_gap={diagnostics['y_lower_gap']:.3e}, "
                 f"z_feas={diagnostics['z_feas']:.3e}, z_gap={diagnostics['z_lower_gap']:.3e}, "
                 f"lambda_norm={diagnostics['lambda_norm']:.3e}, "
@@ -1062,62 +1080,63 @@ def run_single_instance_gcmo(instance_idx, problem_size):
         raise
 
 
-def run_single_instance(instance_idx, problem_size):
+def run_single_instance(instance_idx, problem_size, instance_position, num_instances):
     if SOLVER_METHOD == "fop":
-        return run_single_instance_fop(instance_idx, problem_size)
+        return run_single_instance_fop(instance_idx, problem_size, instance_position, num_instances)
     if SOLVER_METHOD == "smo":
-        return run_single_instance_smo(instance_idx, problem_size)
+        return run_single_instance_smo(instance_idx, problem_size, instance_position, num_instances)
     if SOLVER_METHOD == "gcmo":
-        return run_single_instance_gcmo(instance_idx, problem_size)
+        return run_single_instance_gcmo(instance_idx, problem_size, instance_position, num_instances)
     raise ValueError(f"Unknown SOLVER_METHOD: {SOLVER_METHOD}")
 
 
 def run_problem_size(problem_size):
-    """Average the paper's initial/final objective values over NUM_INSTANCES."""
+    """Run the selected instance indices for one problem size."""
     n_val, m_val, l_val = problem_size
-    print(f"Starting triple ({n_val}, {m_val}, {l_val})", flush=True)
+    instance_indices = resolve_instance_indices()
+    num_instances = len(instance_indices)
+    print(
+        f"Starting triple ({n_val}, {m_val}, {l_val}) with instance indices {instance_indices}",
+        flush=True,
+    )
 
-    initial_values = []
-    final_values = []
-
-    for instance_idx in range(NUM_INSTANCES):
-        generate_instance(problem_size, instance_idx)
+    for instance_position, instance_idx in enumerate(instance_indices, start=1):
         start_time = time.perf_counter()
-        result = run_single_instance(instance_idx, problem_size)
+        try:
+            generate_instance(problem_size, instance_idx)
+            result = run_single_instance(
+                instance_idx,
+                problem_size,
+                instance_position,
+                num_instances,
+            )
+        except Exception as exc:
+            elapsed = time.perf_counter() - start_time
+            print(
+                f"Failed instance {format_instance_label(instance_idx, instance_position, num_instances)} "
+                f"for ({n_val}, {m_val}, {l_val}) after {elapsed:.1f}s: {exc}",
+                flush=True,
+            )
+            continue
+
         elapsed = time.perf_counter() - start_time
 
-        initial_values.append(result["initial_objective"])
-        final_values.append(result["final_objective"])
-
         print(
-            f"Completed instance {instance_idx + 1}/{NUM_INSTANCES} for ({n_val}, {m_val}, {l_val}) "
+            f"Completed instance {format_instance_label(instance_idx, instance_position, num_instances)} "
+            f"for ({n_val}, {m_val}, {l_val}) "
             f"in {result['num_outer_iters']} outer iterations [{elapsed:.1f}s]: "
             f"initial={result['initial_objective']:.2f} final={result['final_objective']:.2f} "
             f"feas={result['final_feas']:.2e} gap={result['final_lower_gap']:.2e}",
             flush=True,
         )
 
-    avg_initial = sum(initial_values) / len(initial_values)
-    avg_final = sum(final_values) / len(final_values)
-    return {
-        "avg_initial": avg_initial,
-        "avg_final": avg_final,
-    }
-
 
 def run_experiment():
-    """Main Table 2 driver over the requested size grid."""
+    """Main driver over the requested size grid."""
     torch.manual_seed(SEED)
-    print("n m l Initial objective value Final objective value", flush=True)
-    results = []
 
     for problem_size in PROBLEM_SIZES:
-        stats = run_problem_size(problem_size)
-        n_val, m_val, l_val = problem_size
-        print(f"{n_val} {m_val} {l_val} {stats['avg_initial']:.2f} {stats['avg_final']:.2f}", flush=True)
-        results.append((problem_size, stats["avg_initial"], stats["avg_final"]))
-
-    return results
+        run_problem_size(problem_size)
 
 
 if __name__ == "__main__":
