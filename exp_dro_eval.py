@@ -164,11 +164,16 @@ def simplex_eta_penalty(simplex_weights, eta_value):
     return 0.5 * eta_value.reshape(()).to(centered.dtype) * torch.sum(centered.square())
 
 
-def train_ldro_value(cached_batches, classifier, simplex_weights, eta_value, weight_decay):
-    split_summary = summarize_cached_split(cached_batches, classifier, simplex_weights.numel())
+def ldro_value_from_summary(split_summary, classifier, simplex_weights, eta_value, weight_decay):
     objective = torch.dot(simplex_weights, split_summary["group_mean_losses"])
     objective = objective - simplex_eta_penalty(simplex_weights, eta_value)
     objective = objective + classifier_l2_penalty(classifier, weight_decay)
+    return objective
+
+
+def train_ldro_value(cached_batches, classifier, simplex_weights, eta_value, weight_decay):
+    split_summary = summarize_cached_split(cached_batches, classifier, simplex_weights.numel())
+    objective = ldro_value_from_summary(split_summary, classifier, simplex_weights, eta_value, weight_decay)
     return objective, split_summary
 
 
@@ -193,9 +198,9 @@ def solve_lower_level_problem(
 ):
     mu_x = float(weight_decay)
     mu_y = float(eta_value.item())
-    if mu_x <= 0:
+    if mu_x < 0:
         raise ValueError(f"weight_decay must be positive for SAPD+, got {mu_x}")
-    if mu_y <= 0:
+    if mu_y < 0:
         raise ValueError(f"eta must be positive for SAPD+, got {mu_y}")
 
     classifier_var = torch.nn.Parameter(classifier_init.detach().clone())
@@ -322,6 +327,7 @@ def build_run_metrics(
     test_counts,
     current_train_ldro,
     lower_level_solution,
+    lower_level_skip_reason,
     requested_solver_max_outer_iters,
     applied_solver_max_outer_iters,
     completed_outer_iters,
@@ -329,7 +335,6 @@ def build_run_metrics(
 ):
     val_upper_objective, val_worst_group_index = upper_objective(val_summary)
     test_upper_objective, test_worst_group_index = upper_objective(test_summary)
-    lower_level_gap = float(current_train_ldro.detach().item()) - lower_level_solution["optimized_value"]
 
     metrics = {
         "outer_iteration": int(completed_outer_iters),
@@ -343,23 +348,36 @@ def build_run_metrics(
         "val_worst_group_index": val_worst_group_index,
         "test_upper_objective": float(test_upper_objective.detach().item()),
         "test_worst_group_index": test_worst_group_index,
-        "train_ldro_current": float(current_train_ldro.detach().item()),
-        "train_ldro_optimized": lower_level_solution["optimized_value"],
-        "train_lower_gap": lower_level_gap,
+        "lower_level_eval_skipped": float(lower_level_solution is None),
         "sapd_requested_max_iters": requested_solver_max_outer_iters,
-        "sapd_applied_max_iters": applied_solver_max_outer_iters,
-        "sapd_num_outer_iters": lower_level_solution["solver_stats"]["num_outer_iters"],
-        "sapd_num_inner_iters": lower_level_solution["solver_stats"]["num_inner_iters"],
-        "sapd_final_delta": lower_level_solution["solver_stats"]["final_delta"],
     }
     if call_cumulative_scsc_inner_iters is not None:
         metrics["cumulative_inner_iters"] = int(call_cumulative_scsc_inner_iters)
-    if lower_level_gap < 0.0 and lower_level_gap >= -1e-4:
-        metrics["gap_note_code"] = 1.0
-    elif lower_level_gap < -1e-4:
-        metrics["gap_note_code"] = 2.0
+
+    if lower_level_solution is None:
+        metrics["train_ldro_current"] = float("nan")
+        metrics["train_ldro_optimized"] = float("nan")
+        metrics["train_lower_gap"] = float("nan")
+        metrics["sapd_applied_max_iters"] = 0
+        metrics["sapd_num_outer_iters"] = 0
+        metrics["sapd_num_inner_iters"] = 0
+        metrics["sapd_final_delta"] = float("nan")
+        metrics["gap_note_code"] = float("nan")
     else:
-        metrics["gap_note_code"] = 0.0
+        lower_level_gap = float(current_train_ldro.detach().item()) - lower_level_solution["optimized_value"]
+        metrics["train_ldro_current"] = float(current_train_ldro.detach().item())
+        metrics["train_ldro_optimized"] = lower_level_solution["optimized_value"]
+        metrics["train_lower_gap"] = lower_level_gap
+        metrics["sapd_applied_max_iters"] = applied_solver_max_outer_iters
+        metrics["sapd_num_outer_iters"] = lower_level_solution["solver_stats"]["num_outer_iters"]
+        metrics["sapd_num_inner_iters"] = lower_level_solution["solver_stats"]["num_inner_iters"]
+        metrics["sapd_final_delta"] = lower_level_solution["solver_stats"]["final_delta"]
+        if lower_level_gap < 0.0 and lower_level_gap >= -1e-4:
+            metrics["gap_note_code"] = 1.0
+        elif lower_level_gap < -1e-4:
+            metrics["gap_note_code"] = 2.0
+        else:
+            metrics["gap_note_code"] = 0.0
 
     for group_idx in range(NUM_GROUPS):
         metrics[f"train_group_accuracy_{group_idx}"] = float(train_summary["group_accuracies"][group_idx].detach().item())
@@ -377,6 +395,8 @@ def build_run_metrics(
         "resolved_device": str(device),
         "device_note": device_note,
     }
+    if lower_level_skip_reason is not None:
+        metadata["evaluation_note"] = lower_level_skip_reason
     return metrics, metadata
 
 
@@ -384,6 +404,8 @@ def print_checkpoint_metrics(metadata, metrics):
     print(f"checkpoint_path={metadata['checkpoint_path']}")
     print(f"resolved_device={metadata['resolved_device']}")
     print(f"device_note={metadata['device_note']}")
+    if metadata.get("evaluation_note"):
+        print(f"evaluation_note={metadata['evaluation_note']}")
     for key, value in metrics.items():
         print(f"{key}={value}")
 
@@ -468,27 +490,37 @@ def evaluate_checkpoint(checkpoint_path):
     solver_lip_tau = checkpoint_args.get("solver_lip_tau")
     solver_log_every = int(checkpoint_args.get("log_every", 1))
 
-    current_train_ldro, train_summary = train_ldro_value(
-        train_cache,
-        classifier_tensor,
-        train_simplex_tensor,
-        eta_tensor,
-        weight_decay,
-    )
+    train_summary = summarize_cached_split(train_cache, classifier_tensor, NUM_GROUPS)
     val_summary = summarize_cached_split(val_cache, classifier_tensor, NUM_GROUPS)
     test_summary = summarize_cached_split(test_cache, classifier_tensor, NUM_GROUPS)
-    lower_level_solution = solve_lower_level_problem(
-        train_cache,
-        classifier_copy_tensor,
-        train_simplex_copy_tensor,
-        eta_tensor,
-        weight_decay,
-        lip=solver_lip_h,
-        lip_tau=solver_lip_tau,
-        theta=solver_theta,
-        max_iter=applied_solver_max_outer_iters,
-        log_every=solver_log_every,
-    )
+    current_train_ldro = None
+    lower_level_solution = None
+    lower_level_skip_reason = None
+    if weight_decay <= 0.0:
+        lower_level_skip_reason = (
+            f"skipped lower-level evaluation because weight_decay={weight_decay} "
+            "makes the SAPD+ strong-convexity parameter mu_x non-positive"
+        )
+    else:
+        current_train_ldro = ldro_value_from_summary(
+            train_summary,
+            classifier_tensor,
+            train_simplex_tensor,
+            eta_tensor,
+            weight_decay,
+        )
+        lower_level_solution = solve_lower_level_problem(
+            train_cache,
+            classifier_copy_tensor,
+            train_simplex_copy_tensor,
+            eta_tensor,
+            weight_decay,
+            lip=solver_lip_h,
+            lip_tau=solver_lip_tau,
+            theta=solver_theta,
+            max_iter=applied_solver_max_outer_iters,
+            log_every=solver_log_every,
+        )
 
     metrics, metadata = build_run_metrics(
         checkpoint_path=checkpoint_path,
@@ -502,6 +534,7 @@ def evaluate_checkpoint(checkpoint_path):
         test_counts=test_counts,
         current_train_ldro=current_train_ldro,
         lower_level_solution=lower_level_solution,
+        lower_level_skip_reason=lower_level_skip_reason,
         requested_solver_max_outer_iters=requested_solver_max_outer_iters,
         applied_solver_max_outer_iters=applied_solver_max_outer_iters,
         completed_outer_iters=int(require_key(checkpoint, "completed_outer_iters", f"checkpoint {checkpoint_path}")),
