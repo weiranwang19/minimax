@@ -5,7 +5,7 @@ import torch
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
 
-from dro.data import CelebASplitDataset
+from dro.data import CelebASplitDataset, WaterbirdsSplitDataset
 from dro.models import build_resnet50_backbone, classifier_logits
 from dro.problem import identity_prox, simplex_prox
 from minimax import SAPD_SCSC
@@ -14,12 +14,24 @@ from utils import project_onto_simplex
 
 torch.set_default_dtype(torch.float32)
 
-NUM_GROUPS = 4
 LOWER_LEVEL_EVAL_ITER_CAP = 1
+DATASET_DEFAULTS = {
+    "celeba": {
+        "dataset_class": CelebASplitDataset,
+        "target_name": "Blond_Hair",
+        "confounder_name": "Male",
+    },
+    "waterbirds": {
+        "dataset_class": WaterbirdsSplitDataset,
+        "target_name": "waterbird_complete95",
+        "confounder_name": "forest2water2",
+    },
+}
 
 
 def parse_args():
-    parser = argparse.ArgumentParser(description="Evaluate a directory of CelebA DRO checkpoints and log to wandb")
+    parser = argparse.ArgumentParser(description="Evaluate a directory of DRO checkpoints and log to wandb")
+    parser.add_argument("--dataset", choices=DATASET_DEFAULTS.keys(), required=True)
     parser.add_argument("checkpoint_dir", type=Path)
     return parser.parse_args()
 
@@ -69,10 +81,12 @@ def build_eval_loader(dataset, batch_size, num_workers, pin_memory):
     )
 
 
-def build_datasets(checkpoint_args):
+def build_datasets(dataset_name, checkpoint_args):
+    dataset_defaults = DATASET_DEFAULTS[dataset_name]
+    dataset_class = dataset_defaults["dataset_class"]
     dataset_root = Path(require_key(checkpoint_args, "dataset_root", "checkpoint args"))
-    target_name = require_key(checkpoint_args, "target_name", "checkpoint args")
-    confounder_name = require_key(checkpoint_args, "confounder_name", "checkpoint args")
+    target_name = checkpoint_args.get("target_name", dataset_defaults["target_name"])
+    confounder_name = checkpoint_args.get("confounder_name", dataset_defaults["confounder_name"])
     seed = int(require_key(checkpoint_args, "seed", "checkpoint args"))
     train_fraction = float(checkpoint_args.get("train_fraction", 1.0))
     val_fraction = float(checkpoint_args.get("val_fraction", 1.0))
@@ -86,14 +100,14 @@ def build_datasets(checkpoint_args):
         "seed": seed,
         "eval_mode": True,
     }
-    train_dataset = CelebASplitDataset(split="train", fraction=train_fraction, **common)
-    val_dataset = CelebASplitDataset(split="val", fraction=val_fraction, **common)
-    test_dataset = CelebASplitDataset(split="test", fraction=test_fraction, **common)
+    train_dataset = dataset_class(split="train", fraction=train_fraction, **common)
+    val_dataset = dataset_class(split="val", fraction=val_fraction, **common)
+    test_dataset = dataset_class(split="test", fraction=test_fraction, **common)
     return train_dataset, val_dataset, test_dataset
 
 
 @torch.no_grad()
-def cache_split_features(backbone, loader, device, split_name):
+def cache_split_features(backbone, loader, device, split_name, num_groups):
     backbone.eval()
     cached_batches = []
     for images, labels, groups in loader:
@@ -103,11 +117,11 @@ def cache_split_features(backbone, loader, device, split_name):
         features = backbone(images).detach()
         cached_batches.append((features, labels.detach(), groups.detach()))
 
-    counts = torch.zeros(NUM_GROUPS, device=device, dtype=torch.float32)
+    counts = torch.zeros(num_groups, device=device, dtype=torch.float32)
     for _, _, groups in cached_batches:
-        for group_idx in range(NUM_GROUPS):
+        for group_idx in range(num_groups):
             counts[group_idx] += (groups == group_idx).sum().to(dtype=counts.dtype)
-    missing = [str(group_idx) for group_idx in range(NUM_GROUPS) if counts[group_idx].item() <= 0]
+    missing = [str(group_idx) for group_idx in range(num_groups) if counts[group_idx].item() <= 0]
     if missing:
         raise ValueError(
             f"{split_name} split is missing groups {', '.join(missing)}; cannot evaluate full-group objectives"
@@ -245,11 +259,11 @@ def solve_lower_level_problem(
     }
 
 
-def try_build_feature_caches(backbone, train_loader, val_loader, test_loader, device):
+def try_build_feature_caches(backbone, train_loader, val_loader, test_loader, device, num_groups):
     try:
-        train_cache, train_counts = cache_split_features(backbone, train_loader, device, "train")
-        val_cache, val_counts = cache_split_features(backbone, val_loader, device, "val")
-        test_cache, test_counts = cache_split_features(backbone, test_loader, device, "test")
+        train_cache, train_counts = cache_split_features(backbone, train_loader, device, "train", num_groups)
+        val_cache, val_counts = cache_split_features(backbone, val_loader, device, "val", num_groups)
+        test_cache, test_counts = cache_split_features(backbone, test_loader, device, "test", num_groups)
         return device, backbone, train_cache, train_counts, val_cache, val_counts, test_cache, test_counts, None
     except RuntimeError as exc:
         if device.type != "cuda" or "out of memory" not in str(exc).lower():
@@ -258,9 +272,9 @@ def try_build_feature_caches(backbone, train_loader, val_loader, test_loader, de
         torch.cuda.empty_cache()
         cpu_device = torch.device("cpu")
         backbone = backbone.to(cpu_device)
-        train_cache, train_counts = cache_split_features(backbone, train_loader, cpu_device, "train")
-        val_cache, val_counts = cache_split_features(backbone, val_loader, cpu_device, "val")
-        test_cache, test_counts = cache_split_features(backbone, test_loader, cpu_device, "test")
+        train_cache, train_counts = cache_split_features(backbone, train_loader, cpu_device, "train", num_groups)
+        val_cache, val_counts = cache_split_features(backbone, val_loader, cpu_device, "val", num_groups)
+        test_cache, test_counts = cache_split_features(backbone, test_loader, cpu_device, "test", num_groups)
         return (
             cpu_device,
             backbone,
@@ -332,6 +346,7 @@ def build_run_metrics(
     applied_solver_max_outer_iters,
     completed_outer_iters,
     call_cumulative_scsc_inner_iters,
+    num_groups,
 ):
     val_upper_objective, val_worst_group_index = upper_objective(val_summary)
     test_upper_objective, test_worst_group_index = upper_objective(test_summary)
@@ -379,7 +394,7 @@ def build_run_metrics(
         else:
             metrics["gap_note_code"] = 0.0
 
-    for group_idx in range(NUM_GROUPS):
+    for group_idx in range(num_groups):
         metrics[f"train_group_accuracy_{group_idx}"] = float(train_summary["group_accuracies"][group_idx].detach().item())
         metrics[f"train_group_loss_{group_idx}"] = float(train_summary["group_mean_losses"][group_idx].detach().item())
         metrics[f"train_group_count_{group_idx}"] = int(train_counts[group_idx].item())
@@ -410,7 +425,7 @@ def print_checkpoint_metrics(metadata, metrics):
         print(f"{key}={value}")
 
 
-def evaluate_checkpoint(checkpoint_path):
+def evaluate_checkpoint(checkpoint_path, dataset_name):
     checkpoint = torch.load(checkpoint_path, map_location="cpu")
     checkpoint_args = require_key(checkpoint, "args", f"checkpoint {checkpoint_path}")
     if not isinstance(checkpoint_args, dict):
@@ -440,13 +455,15 @@ def evaluate_checkpoint(checkpoint_path):
         raise ValueError(
             f"Checkpoint classifier has shape {tuple(classifier_tensor.shape)} but backbone feature_dim is {feature_dim}"
         )
-    if train_simplex_tensor.numel() != NUM_GROUPS:
-        raise ValueError(f"Expected {NUM_GROUPS} train groups, got {train_simplex_tensor.numel()}")
-    if val_simplex_tensor.numel() != NUM_GROUPS:
-        raise ValueError(f"Expected {NUM_GROUPS} validation groups, got {val_simplex_tensor.numel()}")
 
     backbone = backbone.to(device)
-    train_dataset, val_dataset, test_dataset = build_datasets(checkpoint_args)
+    train_dataset, val_dataset, test_dataset = build_datasets(dataset_name, checkpoint_args)
+    num_groups = train_dataset.num_groups
+    if train_simplex_tensor.numel() != num_groups:
+        raise ValueError(f"Expected {num_groups} train groups, got {train_simplex_tensor.numel()}")
+    if val_simplex_tensor.numel() != num_groups:
+        raise ValueError(f"Expected {num_groups} validation groups, got {val_simplex_tensor.numel()}")
+
     batch_size = max(int(checkpoint_args.get("batch_size", 1)), int(checkpoint_args.get("eval_batch_size", 1)))
     num_workers = int(checkpoint_args.get("num_workers", 0))
     pin_memory = device.type == "cuda"
@@ -470,6 +487,7 @@ def evaluate_checkpoint(checkpoint_path):
         val_loader,
         test_loader,
         device,
+        num_groups,
     )
     if cache_fallback_exc is not None:
         classifier_tensor = classifier_tensor.to(device)
@@ -490,9 +508,9 @@ def evaluate_checkpoint(checkpoint_path):
     solver_lip_tau = checkpoint_args.get("solver_lip_tau")
     solver_log_every = int(checkpoint_args.get("log_every", 1))
 
-    train_summary = summarize_cached_split(train_cache, classifier_tensor, NUM_GROUPS)
-    val_summary = summarize_cached_split(val_cache, classifier_tensor, NUM_GROUPS)
-    test_summary = summarize_cached_split(test_cache, classifier_tensor, NUM_GROUPS)
+    train_summary = summarize_cached_split(train_cache, classifier_tensor, num_groups)
+    val_summary = summarize_cached_split(val_cache, classifier_tensor, num_groups)
+    test_summary = summarize_cached_split(test_cache, classifier_tensor, num_groups)
     current_train_ldro = None
     lower_level_solution = None
     lower_level_skip_reason = None
@@ -539,6 +557,7 @@ def evaluate_checkpoint(checkpoint_path):
         applied_solver_max_outer_iters=applied_solver_max_outer_iters,
         completed_outer_iters=int(require_key(checkpoint, "completed_outer_iters", f"checkpoint {checkpoint_path}")),
         call_cumulative_scsc_inner_iters=checkpoint.get("call_cumulative_scsc_inner_iters"),
+        num_groups=num_groups,
     )
     return metrics, metadata
 
@@ -549,8 +568,9 @@ def main():
     wandb = resolve_wandb()
     run = wandb.init(
         project="minimax",
-        name=f"dro_eval_{args.checkpoint_dir.name}",
+        name=f"dro_eval_{args.dataset}_{args.checkpoint_dir.name}",
         config={
+            "dataset": args.dataset,
             "checkpoint_dir": str(args.checkpoint_dir.resolve()),
             "num_checkpoints": len(checkpoint_records),
             "lower_level_eval_iter_cap": LOWER_LEVEL_EVAL_ITER_CAP,
@@ -565,7 +585,7 @@ def main():
             f"evaluating checkpoint={checkpoint_path} outer_iteration={checkpoint_record['completed_outer_iters']}",
             flush=True,
         )
-        metrics, metadata = evaluate_checkpoint(checkpoint_path)
+        metrics, metadata = evaluate_checkpoint(checkpoint_path, args.dataset)
         if not metrics_defined:
             define_wandb_metrics(run, metrics.keys())
             metrics_defined = True

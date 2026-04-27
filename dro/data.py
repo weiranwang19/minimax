@@ -12,6 +12,9 @@ from torchvision import transforms
 IMAGENET_MEAN = [0.485, 0.456, 0.406]
 IMAGENET_STD = [0.229, 0.224, 0.225]
 CELEBA_SPLITS = {"train": 0, "val": 1, "test": 2}
+WATERBIRDS_SPLITS = {"train": 0, "val": 1, "test": 2}
+WATERBIRDS_DEFAULT_TARGET = "waterbird_complete95"
+WATERBIRDS_DEFAULT_CONFOUNDER = "forest2water2"
 
 
 def build_celeba_transform(train, augment):
@@ -34,6 +37,32 @@ def build_celeba_transform(train, augment):
         [
             transforms.CenterCrop(178),
             transforms.Resize(target_resolution),
+            transforms.ToTensor(),
+            transforms.Normalize(IMAGENET_MEAN, IMAGENET_STD),
+        ]
+    )
+
+
+def build_waterbirds_transform(train, augment):
+    target_resolution = (224, 224)
+    if train and augment:
+        return transforms.Compose(
+            [
+                transforms.RandomResizedCrop(
+                    target_resolution,
+                    scale=(0.7, 1.0),
+                    ratio=(0.75, 1.3333333333333333),
+                    interpolation=Image.BILINEAR,
+                ),
+                transforms.RandomHorizontalFlip(),
+                transforms.ToTensor(),
+                transforms.Normalize(IMAGENET_MEAN, IMAGENET_STD),
+            ]
+        )
+    return transforms.Compose(
+        [
+            transforms.Resize((256, 256)),
+            transforms.CenterCrop(target_resolution),
             transforms.ToTensor(),
             transforms.Normalize(IMAGENET_MEAN, IMAGENET_STD),
         ]
@@ -84,6 +113,75 @@ class CelebASplitDataset(Dataset):
         self.groups = (self.labels * 2 + self.confounders).to(dtype=torch.long)
         self.num_groups = 4
         self.transform = build_celeba_transform(train=split == "train" and not eval_mode, augment=augment)
+
+    def __len__(self):
+        return len(self.filenames)
+
+    def __getitem__(self, index):
+        image = Image.open(self.data_dir / self.filenames[index]).convert("RGB")
+        image = self.transform(image)
+        return image, self.labels[index], self.groups[index]
+
+    def group_counts(self):
+        counts = torch.bincount(self.groups, minlength=self.num_groups)
+        return counts.to(dtype=torch.long)
+
+
+class WaterbirdsSplitDataset(Dataset):
+    def __init__(
+        self,
+        root_dir,
+        split,
+        target_name=WATERBIRDS_DEFAULT_TARGET,
+        confounder_name=WATERBIRDS_DEFAULT_CONFOUNDER,
+        augment=False,
+        fraction=1.0,
+        seed=0,
+        eval_mode=False,
+    ):
+        if split not in WATERBIRDS_SPLITS:
+            raise ValueError(f"Unknown split: {split}")
+        if not 0 < fraction <= 1.0:
+            raise ValueError(f"fraction must be in (0, 1], got {fraction}")
+
+        root_dir = Path(root_dir)
+        data_dir = root_dir / "data" / f"{target_name}_{confounder_name}"
+        metadata_path = data_dir / "metadata.csv"
+        if not metadata_path.exists():
+            raise FileNotFoundError(
+                f"Waterbirds metadata not found at {metadata_path}. "
+                "Expected the group_DRO tarball extracted under root_dir/data/."
+            )
+
+        metadata = pd.read_csv(metadata_path)
+        required_columns = {"img_filename", "y", "place", "split"}
+        missing_columns = sorted(required_columns - set(metadata.columns))
+        if missing_columns:
+            raise ValueError(
+                f"Waterbirds metadata is missing required columns: {', '.join(missing_columns)}"
+            )
+        metadata = metadata[metadata["split"] == WATERBIRDS_SPLITS[split]].reset_index(drop=True)
+        if fraction < 1.0:
+            metadata = metadata.sample(frac=fraction, random_state=seed).reset_index(drop=True)
+
+        self.root_dir = root_dir
+        self.data_dir = data_dir
+        self.split = split
+        self.target_name = target_name
+        self.confounder_name = confounder_name
+        self.filenames = metadata["img_filename"].astype(str).tolist()
+        self.labels = torch.as_tensor(metadata["y"].to_numpy(), dtype=torch.long)
+        self.confounders = torch.as_tensor(metadata["place"].to_numpy(), dtype=torch.long)
+        if not torch.all((self.labels == 0) | (self.labels == 1)):
+            raise ValueError("Waterbirds labels must be binary values in column 'y'")
+        if not torch.all((self.confounders == 0) | (self.confounders == 1)):
+            raise ValueError("Waterbirds confounders must be binary values in column 'place'")
+        self.groups = (self.labels * 2 + self.confounders).to(dtype=torch.long)
+        self.num_groups = 4
+        self.transform = build_waterbirds_transform(
+            train=split == "train" and not eval_mode,
+            augment=augment,
+        )
 
     def __len__(self):
         return len(self.filenames)
@@ -279,4 +377,96 @@ def build_celeba_bundle(
         "train_group_counts": train_dataset.group_counts(),
         "val_group_counts": val_dataset.group_counts(),
         "test_group_counts": test_dataset.group_counts(),
+        "num_classes": 2,
+    }
+
+
+def build_waterbirds_bundle(
+    root_dir,
+    target_name,
+    confounder_name,
+    batch_size,
+    eval_batch_size,
+    num_workers,
+    seed,
+    augment,
+    train_fraction=1.0,
+    val_fraction=1.0,
+    test_fraction=1.0,
+    monitor_batches=1,
+    device=None,
+):
+    train_dataset = WaterbirdsSplitDataset(
+        root_dir,
+        split="train",
+        target_name=target_name,
+        confounder_name=confounder_name,
+        augment=augment,
+        fraction=train_fraction,
+        seed=seed,
+        eval_mode=False,
+    )
+    train_eval_dataset = WaterbirdsSplitDataset(
+        root_dir,
+        split="train",
+        target_name=target_name,
+        confounder_name=confounder_name,
+        augment=False,
+        fraction=train_fraction,
+        seed=seed,
+        eval_mode=True,
+    )
+    val_dataset = WaterbirdsSplitDataset(
+        root_dir,
+        split="val",
+        target_name=target_name,
+        confounder_name=confounder_name,
+        augment=False,
+        fraction=val_fraction,
+        seed=seed,
+        eval_mode=True,
+    )
+    test_dataset = WaterbirdsSplitDataset(
+        root_dir,
+        split="test",
+        target_name=target_name,
+        confounder_name=confounder_name,
+        augment=False,
+        fraction=test_fraction,
+        seed=seed,
+        eval_mode=True,
+    )
+
+    train_loader = _make_loader(train_dataset, batch_size, num_workers, seed)
+    val_loader = _make_loader(val_dataset, batch_size, num_workers, seed + 1)
+    train_monitor_loader = _make_loader(
+        train_eval_dataset,
+        batch_size,
+        num_workers,
+        seed + 2,
+        num_batches=monitor_batches,
+    )
+    val_monitor_loader = _make_loader(
+        val_dataset,
+        batch_size,
+        num_workers,
+        seed + 3,
+        num_batches=monitor_batches,
+    )
+    test_loader = _make_eval_loader(test_dataset, eval_batch_size, num_workers)
+
+    return {
+        "train_dataset": train_dataset,
+        "val_dataset": val_dataset,
+        "test_dataset": test_dataset,
+        "train_provider": CyclingBatchProvider(train_loader, device=device),
+        "val_provider": CyclingBatchProvider(val_loader, device=device),
+        "train_monitor_batches": capture_monitor_batches(train_monitor_loader, monitor_batches),
+        "val_monitor_batches": capture_monitor_batches(val_monitor_loader, monitor_batches),
+        "test_loader": test_loader,
+        "num_groups": train_dataset.num_groups,
+        "train_group_counts": train_dataset.group_counts(),
+        "val_group_counts": val_dataset.group_counts(),
+        "test_group_counts": test_dataset.group_counts(),
+        "num_classes": 2,
     }

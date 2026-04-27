@@ -7,7 +7,13 @@ from pathlib import Path
 import numpy as np
 import torch
 
-from dro import CelebADROProblem, build_celeba_bundle, build_resnet50_backbone, init_classifier
+from dro import (
+    CelebADROProblem,
+    build_celeba_bundle,
+    build_resnet50_backbone,
+    build_waterbirds_bundle,
+    init_classifier,
+)
 from dro.problem import identity_prox, positive_eta_prox, simplex_prox
 from minimax import optimize_NCWC
 from utils import project_onto_simplex
@@ -15,9 +21,24 @@ from utils import project_onto_simplex
 
 torch.set_default_dtype(torch.float32)
 
-DEFAULT_DATASET_ROOT = Path(__file__).resolve().parent / "celeba"
+DEFAULT_CELEBA_DATASET_ROOT = Path(__file__).resolve().parent / "celeba"
+DEFAULT_WATERBIRDS_DATASET_ROOT = Path("/data/backed_up/shared/Data/Waterbirds_Minimax")
 DEFAULT_CHECKPOINT_ROOT = Path(__file__).resolve().parent / "minimax-ckpts"
 WANDB_PROJECT = "minimax"
+DATASET_DEFAULTS = {
+    "celeba": {
+        "dataset_root": DEFAULT_CELEBA_DATASET_ROOT,
+        "target_name": "Blond_Hair",
+        "confounder_name": "Male",
+        "bundle_builder": build_celeba_bundle,
+    },
+    "waterbirds": {
+        "dataset_root": DEFAULT_WATERBIRDS_DATASET_ROOT,
+        "target_name": "waterbird_complete95",
+        "confounder_name": "forest2water2",
+        "bundle_builder": build_waterbirds_bundle,
+    },
+}
 
 # Implementation note for the bilevel variable mapping used below:
 #   x_1 = ResNet50 backbone parameters
@@ -57,8 +78,8 @@ def init_run(args):
         mode=args.wandb_mode,
         config=vars(args),
         reinit=True,
-        name=f"dro-celeba-seed{args.seed}",
-        tags=["dro", "celeba", "stochastic-ncwc"],
+        name=f"dro-{args.dataset}-seed{args.seed}",
+        tags=["dro", args.dataset, "stochastic-ncwc"],
     )
     if hasattr(run, "define_metric"):
         step_metric = "ncwc/cumulative_inner_iters"
@@ -188,11 +209,12 @@ def set_seed(seed):
 
 
 def parse_args():
-    parser = argparse.ArgumentParser(description="Stochastic NCWC CelebA DRO experiment")
-    parser.add_argument("--dataset_root", type=Path, default=DEFAULT_DATASET_ROOT)
+    parser = argparse.ArgumentParser(description="Stochastic NCWC DRO experiment")
+    parser.add_argument("--dataset", choices=DATASET_DEFAULTS.keys(), default="waterbirds")
+    parser.add_argument("--dataset_root", type=Path, default=None)
     parser.add_argument("--ckpt_folder_name", default=None)
-    parser.add_argument("--target_name", default="Blond_Hair")
-    parser.add_argument("--confounder_name", default="Male")
+    parser.add_argument("--target_name", default=None)
+    parser.add_argument("--confounder_name", default=None)
     parser.add_argument("--batch_size", type=int, default=256)
     parser.add_argument("--eval_batch_size", type=int, default=8)
     parser.add_argument("--num_workers", type=int, default=4)
@@ -218,10 +240,40 @@ def parse_args():
     parser.add_argument("--solver_max_outer_iters", type=int, default=300)
     parser.add_argument("--solver_inner_max_iters", type=int, default=1)
     parser.add_argument("--monitor_batches", type=int, default=1)
-    parser.add_argument("--test_eval_every", type=int, default=10)
+    parser.add_argument("--test_eval_every", type=int, default=1)
     parser.add_argument("--log_every", type=int, default=1)
     parser.add_argument("--wandb_mode", default="online", choices=("online", "offline", "disabled"))
     return parser.parse_args()
+
+
+def resolve_dataset_args(args):
+    defaults = DATASET_DEFAULTS[args.dataset]
+    if args.dataset_root is None:
+        args.dataset_root = defaults["dataset_root"]
+    if args.target_name is None:
+        args.target_name = defaults["target_name"]
+    if args.confounder_name is None:
+        args.confounder_name = defaults["confounder_name"]
+    return args
+
+
+def build_dataset_bundle(args, device):
+    bundle_builder = DATASET_DEFAULTS[args.dataset]["bundle_builder"]
+    return bundle_builder(
+        root_dir=args.dataset_root,
+        target_name=args.target_name,
+        confounder_name=args.confounder_name,
+        batch_size=args.batch_size,
+        eval_batch_size=args.eval_batch_size,
+        num_workers=args.num_workers,
+        seed=args.seed,
+        augment=args.augment_data,
+        train_fraction=args.train_fraction,
+        val_fraction=args.val_fraction,
+        test_fraction=args.test_fraction,
+        monitor_batches=args.monitor_batches,
+        device=device,
+    )
 
 
 def make_progress_logger(run, problem, classifier, test_loader, test_eval_every, solver_lip_h, checkpoint_saver):
@@ -296,6 +348,7 @@ def make_progress_logger(run, problem, classifier, test_loader, test_eval_every,
 
 def main():
     args = parse_args()
+    resolve_dataset_args(args)
     if args.batch_size < 4:
         raise ValueError("batch_size must be at least 4 so each batch can contain all 4 groups")
     if args.weight_decay < 0:
@@ -306,26 +359,12 @@ def main():
     run = init_run(args)
     start_time = time.perf_counter()
 
-    data_bundle = build_celeba_bundle(
-        root_dir=args.dataset_root,
-        target_name=args.target_name,
-        confounder_name=args.confounder_name,
-        batch_size=args.batch_size,
-        eval_batch_size=args.eval_batch_size,
-        num_workers=args.num_workers,
-        seed=args.seed,
-        augment=args.augment_data,
-        train_fraction=args.train_fraction,
-        val_fraction=args.val_fraction,
-        test_fraction=args.test_fraction,
-        monitor_batches=args.monitor_batches,
-        device=device,
-    )
+    data_bundle = build_dataset_bundle(args, device)
 
     backbone, feature_dim = build_resnet50_backbone(pretrained=not args.train_from_scratch)
     backbone = backbone.to(device)
     backbone.train()
-    classifier = init_classifier(feature_dim, 2, device=device)  # y_1
+    classifier = init_classifier(feature_dim, data_bundle["num_classes"], device=device)  # y_1
     eta = torch.nn.Parameter(torch.tensor([args.eta_init], device=device))
     train_simplex = torch.nn.Parameter(
         torch.full((data_bundle["num_groups"],), 1.0 / data_bundle["num_groups"], device=device)
@@ -430,6 +469,7 @@ def main():
     )
     summary = {
         "instance/elapsed_sec": elapsed,
+        "instance/dataset": args.dataset,
         "instance/feature_dim": feature_dim,
         "instance/solver_num_outer_iters": solver_stats["num_outer_iters"],
         "instance/solver_num_inner_iters": solver_stats["num_inner_iters"],
