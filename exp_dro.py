@@ -22,7 +22,7 @@ from utils import project_onto_simplex
 torch.set_default_dtype(torch.float32)
 
 DEFAULT_CELEBA_DATASET_ROOT = Path(__file__).resolve().parent / "celeba"
-DEFAULT_WATERBIRDS_DATASET_ROOT = Path("/data/backed_up/shared/Data/Waterbirds_Minimax")
+DEFAULT_WATERBIRDS_DATASET_ROOT = Path(__file__).resolve().parent / "waterbirds"
 DEFAULT_CHECKPOINT_ROOT = Path(__file__).resolve().parent / "minimax-ckpts"
 WANDB_PROJECT = "minimax"
 DATASET_DEFAULTS = {
