@@ -624,6 +624,14 @@ def optimize_bilevel_constrained_minimax(
         # Lagrange multipliers are box-constrained by the assumed dual bound.
         return torch.clamp(v, min=0.0, max=float(lagrange_bound))
 
+    # TODO: add SCSC step to compute approximate minimax point of lower_z1_z2, fix the current x, minimize over z1 and maximize over z2, use them as init for y1 and y2.
+    def h_warm_start():
+        return lower_smooth(params_x, params_z1) + torch.dot(params_z2[0], lower_constraints(params_x, params_z1))
+
+    SCSC()
+    assign_vars(params_y1, xx)
+    assign_vars(params_y2, yy)
+        
     def h_lagrangian():
         upper_term = upper_smooth(params_x, params_y1)
         lower_z1_y2 = lower_smooth(params_x, params_z1) + torch.dot(params_y2[0], lower_constraints(params_x, params_z1))
