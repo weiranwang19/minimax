@@ -19,12 +19,12 @@ torch.set_default_dtype(torch.float64)
 
 
 # Section 4.2 / Table 2 experiment controls. `PROBLEM_SIZES` is the actual grid of (n, m, l) values; the rest are algorithmic parameters that can be tuned for better performance.
-PROBLEM_SIZES = [(100 * k, 100 * k, 5 * k) for k in range(4, 6)]
-# PROBLEM_SIZES = [(400, 400, 20), (500, 500, 25)]
+# PROBLEM_SIZES = [(100 * k, 100 * k, 5 * k) for k in range(1,4)]
+PROBLEM_SIZES = [(500, 500, 25)]
 # Zero-based instance indices. Edit this list to rerun only failed/interrupted instances
 # while keeping the exact same sampled instance for each (n, m, l) across methods.
-NUM_INSTANCES = list(range(5))
-# NUM_INSTANCES = [2,3,4]
+# NUM_INSTANCES = list(range(10))
+NUM_INSTANCES = [1,2,3,5,6,7,8,9]
 SOLVER_METHOD = "gcmo"
 # FOP
 BASE_RHO = 5.0
@@ -881,7 +881,7 @@ def run_single_instance_gcmo(instance_idx, problem_size, instance_position, num_
     start_time = time.perf_counter()
     run_finished = False
     initial_x = torch.zeros(N)
-    initial_y = Y_HAT.clone()
+    initial_y = torch.zeros(M)
     initial_objective = upper_objective(initial_x, initial_y)
     log_history(run, {"instance/initial_objective": initial_objective})
     gtilde_hi = compute_gtilde_hi()

@@ -625,12 +625,12 @@ def optimize_bilevel_constrained_minimax(
         return torch.clamp(v, min=0.0, max=float(lagrange_bound))
 
     # TODO: add SCSC step to compute approximate minimax point of lower_z1_z2, fix the current x, minimize over z1 and maximize over z2, use them as init for y1 and y2.
-    def h_warm_start():
-        return lower_smooth(params_x, params_z1) + torch.dot(params_z2[0], lower_constraints(params_x, params_z1))
+    # def h_warm_start():
+    #     return lower_smooth(params_x, params_z1) + torch.dot(params_z2[0], lower_constraints(params_x, params_z1))
 
-    SCSC()
-    assign_vars(params_y1, xx)
-    assign_vars(params_y2, yy)
+    # SCSC()
+    # assign_vars(params_y1, xx)
+    # assign_vars(params_y2, yy)
         
     def h_lagrangian():
         upper_term = upper_smooth(params_x, params_y1)
@@ -652,11 +652,11 @@ def optimize_bilevel_constrained_minimax(
     ncwc_metrics = _adapt_ncwc_metrics(metrics_func, len(params_x), len(params_y1))
 
     # TODO: if none, substitute with constant
-    # lip_h = (
-    #         L_grad_f1
-    #         + 2 * rho * (L_grad_ftilde1 + L_gtilde + math.sqrt(num_constraints) * lagrange_bound * L_grad_gtilde)
-    # )
-    lip_h = 6.0
+    lip_h = (
+            L_grad_f1
+            + 2 * rho * (L_grad_ftilde1 + L_gtilde + math.sqrt(num_constraints) * lagrange_bound * L_grad_gtilde)
+    )
+    # lip_h = 6.0
 
     solver_stats = optimize_NCWC(
         params_x + params_y1 + params_y2,
