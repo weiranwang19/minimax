@@ -8,3 +8,5 @@ minimax-ckpts
 svm/models/
 svm/results/
 svm/__pycache__/
+
+tea_debug.log

@@ -23,8 +23,8 @@ torch.set_default_dtype(torch.float64)
 PROBLEM_SIZES = [(500, 500, 25)]
 # Zero-based instance indices. Edit this list to rerun only failed/interrupted instances
 # while keeping the exact same sampled instance for each (n, m, l) across methods.
-# NUM_INSTANCES = list(range(10))
-NUM_INSTANCES = [1,2,3,5,6,7,8,9]
+# NUM_INSTANCES = list(range(5))
+NUM_INSTANCES = [0,2,3,4,6,7,8,9]
 SOLVER_METHOD = "gcmo"
 # FOP
 BASE_RHO = 5.0
@@ -205,7 +205,7 @@ def init_instance_run(problem_size, instance_idx, instance_position, num_instanc
         entity=WANDB_ENTITY,
         mode=WANDB_MODE,
         group=f"{SOLVER_METHOD}-n{n_val}-m{m_val}-l{l_val}",
-        name=f"{SOLVER_METHOD}-n{n_val}-m{m_val}-l{l_val}-idx{instance_idx}-seed{SEED}",
+        name=f"{SOLVER_METHOD}-n{n_val}-m{m_val}-l{l_val}-idx{instance_idx}-seed{SEED}-lip6",
         tags=list(WANDB_TAGS),
         config=config,
         reinit=True,
