@@ -412,7 +412,10 @@ def optimize_bilevel_constrained_smo(
         raise ValueError(f"Expected {len(params_y)} proximal operators for y, got {len(prox_y_funcs)}")
 
     if z0 is None:
-        z_state = clone_vals(params_y)
+        # Use the first lower warm start as the default auxiliary state.  A raw
+        # random z0 can make the first multiplier update track an unsolved
+        # auxiliary point instead of the warm-started lower candidate.
+        z_state = None
     else:
         if torch.is_tensor(z0):
             z0 = [z0]
@@ -423,7 +426,7 @@ def optimize_bilevel_constrained_smo(
         z_state = clone_vals(z0)
 
     with torch.no_grad():
-        constraint_template = lower_constraints(params_x, z_state)
+        constraint_template = lower_constraints(params_x, params_y if z_state is None else z_state)
     if lambda0 is None:
         lambda_k = torch.zeros_like(constraint_template)
     else:
@@ -470,6 +473,8 @@ def optimize_bilevel_constrained_smo(
             max_iter=warm_start_max_iter,
         )
         assign_vals(params_y, y_init)
+        if z_state is None:
+            z_state = clone_vals(y_init)
 
         z_params = clone_vals(z_state, requires_grad=True)
 

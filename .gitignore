@@ -4,7 +4,6 @@ wandb/
 celeba
 waterbirds
 minimax-ckpts
-# svm/data/
 svm/models/
 svm/results/
 svm/__pycache__/
