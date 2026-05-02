@@ -451,7 +451,13 @@ def _initial_reference_objective(c0):
     return float("nan"), lower_ref
 
 
-def _summary_from_diagnostics(initial_objective, initial_iterate_objective, diagnostics, elapsed):
+def _summary_from_diagnostics(
+    initial_objective,
+    initial_iterate_objective,
+    paper_initial_objective,
+    diagnostics,
+    elapsed,
+):
     passed = (
         diagnostics["y_feas"] <= FEAS_TOL
         and diagnostics["y_lower_gap"] <= LOWER_GAP_TOL
@@ -460,6 +466,7 @@ def _summary_from_diagnostics(initial_objective, initial_iterate_objective, diag
     return {
         "instance/initial_objective": initial_objective,
         "instance/initial_iterate_objective": initial_iterate_objective,
+        "instance/paper_initial_objective": paper_initial_objective,
         "instance/final_objective": diagnostics["upper_obj"],
         "instance/validation_accuracy": diagnostics["validation_accuracy"],
         "instance/validation_error_count": diagnostics["validation_error_count"],
@@ -484,10 +491,19 @@ def _finalize_instance(
     elapsed,
     initial_objective,
     initial_iterate_objective,
+    paper_initial_objective,
     run,
     extra_tensors=None,
 ):
     problem = _require_problem()
+    artifact_diagnostics = dict(diagnostics)
+    artifact_diagnostics.update(
+        {
+            "initial_objective": initial_objective,
+            "initial_iterate_objective": initial_iterate_objective,
+            "paper_initial_objective": paper_initial_objective,
+        }
+    )
     model_path, result_path = save_artifacts(
         MODEL_ROOT,
         RESULT_ROOT,
@@ -496,17 +512,24 @@ def _finalize_instance(
         method,
         c_final,
         y_final,
-        diagnostics,
+        artifact_diagnostics,
         solver_result,
         elapsed,
         extra_tensors=extra_tensors,
     )
-    summary = _summary_from_diagnostics(initial_objective, initial_iterate_objective, diagnostics, elapsed)
+    summary = _summary_from_diagnostics(
+        initial_objective,
+        initial_iterate_objective,
+        paper_initial_objective,
+        diagnostics,
+        elapsed,
+    )
     summary.update({"instance/model_path": str(model_path), "instance/result_path": str(result_path)})
     finish_run(run, summary)
     return {
         "initial_objective": initial_objective,
         "initial_iterate_objective": initial_iterate_objective,
+        "paper_initial_objective": paper_initial_objective,
         "final_objective": diagnostics["upper_obj"],
         "validation_accuracy": diagnostics["validation_accuracy"],
         "final_feas": diagnostics["y_feas"],
@@ -522,18 +545,27 @@ def _initial_state(run):
     problem = _require_problem()
     c0, y0 = problem.make_initial_iterates()
     initial_iterate_objective = problem.upper_objective(c0, y0)
-    initial_objective, initial_ref = _initial_reference_objective(c0)
-    if not math.isfinite(initial_objective):
+    paper_initial_objective, initial_ref = _initial_reference_objective(c0)
+    initial_objective = paper_initial_objective
+    if not math.isfinite(paper_initial_objective):
         initial_objective = initial_iterate_objective
     log_metrics(
         run,
         {
             "instance/initial_objective": initial_objective,
             "instance/initial_iterate_objective": initial_iterate_objective,
+            "instance/paper_initial_objective": paper_initial_objective,
             "instance/initial_reference_success": float(initial_ref["success"]),
         },
     )
-    return c0, y0, initial_objective, initial_iterate_objective
+    if VERBOSE:
+        print(
+            f"    Initial paper={paper_initial_objective:.3e} "
+            f"raw_iterate={initial_iterate_objective:.3e} "
+            f"reference_success={int(bool(initial_ref['success']))}",
+            flush=True,
+        )
+    return c0, y0, initial_objective, initial_iterate_objective, paper_initial_objective
 
 
 def run_single_instance_fop(dataset_name, split_idx):
@@ -542,7 +574,7 @@ def run_single_instance_fop(dataset_name, split_idx):
     run = init_run(dataset_name, split_idx)
     start_time = time.perf_counter()
     ncwc_progress_callback = build_ncwc_progress_logger(run)
-    c0, y0, initial_objective, initial_iterate_objective = _initial_state(run)
+    c0, y0, initial_objective, initial_iterate_objective, paper_initial_objective = _initial_state(run)
     stage_diagnostics = []
 
     def stage_callback(payload):
@@ -645,6 +677,7 @@ def run_single_instance_fop(dataset_name, split_idx):
         elapsed,
         initial_objective,
         initial_iterate_objective,
+        paper_initial_objective,
         run,
         extra_tensors={"z": z_final} if z_final is not None else None,
     )
@@ -658,7 +691,7 @@ def run_single_instance_smo(dataset_name, split_idx):
     run = init_run(dataset_name, split_idx)
     start_time = time.perf_counter()
     ncwc_progress_callback = build_ncwc_progress_logger(run)
-    c0, y0, initial_objective, initial_iterate_objective = _initial_state(run)
+    c0, y0, initial_objective, initial_iterate_objective, paper_initial_objective = _initial_state(run)
     stage_diagnostics = []
 
     def stage_callback(payload):
@@ -744,6 +777,7 @@ def run_single_instance_smo(dataset_name, split_idx):
         elapsed,
         initial_objective,
         initial_iterate_objective,
+        paper_initial_objective,
         run,
         extra_tensors={"z": z_final, "lambda": lambda_final},
     )
@@ -757,7 +791,7 @@ def run_single_instance_minimax(dataset_name, split_idx):
     run = init_run(dataset_name, split_idx)
     start_time = time.perf_counter()
     ncwc_progress_callback = build_ncwc_progress_logger(run)
-    c0, y0, initial_objective, initial_iterate_objective = _initial_state(run)
+    c0, y0, initial_objective, initial_iterate_objective, paper_initial_objective = _initial_state(run)
 
     c_tensor = c0.clone().requires_grad_(True)
     y_tensor = y0.clone().requires_grad_(True)
@@ -834,6 +868,7 @@ def run_single_instance_minimax(dataset_name, split_idx):
         elapsed,
         initial_objective,
         initial_iterate_objective,
+        paper_initial_objective,
         run,
         extra_tensors={"z": z_final, "lambda": lambda_final, "z_lambda": z_lambda_final},
     )
@@ -870,7 +905,8 @@ def run_dataset(dataset_name):
         print(
             f"Completed dataset={dataset_name} split={split_idx} "
             f"({split_position}/{len(split_indices)}) in {result['num_outer_iters']} outer iterations "
-            f"[{elapsed:.1f}s]: initial={result['initial_objective']:.3f} "
+            f"[{elapsed:.1f}s]: paper_initial={result['paper_initial_objective']:.3f} "
+            f"raw_initial={result['initial_iterate_objective']:.3f} "
             f"final={result['final_objective']:.3f} acc={100.0 * result['validation_accuracy']:.1f}% "
             f"feas={result['final_feas']:.2e} gap={result['final_lower_gap']:.2e}",
             flush=True,
