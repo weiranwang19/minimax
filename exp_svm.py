@@ -67,6 +67,7 @@ SMO_WARM_START_MAX_ITERS = 200
 MINIMAX_EPS = 1e-2
 MINIMAX_MAX_ITERS = 1000
 MINIMAX_LAGRANGE_BOUND = 1000.0
+MINIMAX_LIP_OVERRIDE = None
 
 # Common stopping/reporting controls.
 FEAS_TOL = 1e-2
@@ -163,6 +164,7 @@ def _serialize_config():
         "minimax_eps": MINIMAX_EPS,
         "minimax_max_iters": MINIMAX_MAX_ITERS,
         "minimax_lagrange_bound": MINIMAX_LAGRANGE_BOUND,
+        "minimax_lip_override": MINIMAX_LIP_OVERRIDE,
         "feas_tol": FEAS_TOL,
         "lower_gap_tol": LOWER_GAP_TOL,
         "lower_reference_solver": LOWER_REFERENCE_SOLVER,
@@ -775,6 +777,7 @@ def run_single_instance_minimax(dataset_name, split_idx):
         objective_func=problem.upper_smooth,
         metrics_func=lambda x_vals, y_vals: _cheap_iterate_metrics(problem, x_vals, y_vals),
         progress_callback=ncwc_progress_callback,
+        lip_override=MINIMAX_LIP_OVERRIDE,
     )
 
     c_final = c_tensor.detach().clone()
@@ -803,6 +806,8 @@ def run_single_instance_minimax(dataset_name, split_idx):
             "svm/stage/rho": solver_result["rho"],
             "svm/stage/epsilon": MINIMAX_EPS,
             "svm/stage/epsilon_0": solver_result["epsilon_0"],
+            "svm/stage/lip_h": solver_result["lip_h"],
+            "svm/stage/computed_lip_h": solver_result["computed_lip_h"],
             "svm/stage/lambda_norm": diagnostics.get("lambda_norm"),
             "svm/stage/z_lambda_norm": diagnostics.get("z_lambda_norm"),
             "svm/stage/lambda_distance": diagnostics.get("lambda_distance"),

@@ -586,6 +586,7 @@ def optimize_bilevel_constrained_minimax(
         objective_func=None, # TODO: delete
         metrics_func=None,
         progress_callback=None,
+        lip_override=None,
 ):
     """
     Our proposed method for the constrained penalty reformulation.
@@ -599,6 +600,10 @@ def optimize_bilevel_constrained_minimax(
         raise ValueError(f"Invalid lagrange_bound: {lagrange_bound}")
     if D_y <= 0:
         raise ValueError(f"Invalid D_y: {D_y}")
+    if lip_override is not None:
+        lip_override = float(lip_override)
+        if not math.isfinite(lip_override) or lip_override <= 0:
+            raise ValueError(f"Invalid lip_override: {lip_override}")
     if log_every <= 0:
         raise ValueError(f"Invalid log_every: {log_every}")
 
@@ -656,12 +661,11 @@ def optimize_bilevel_constrained_minimax(
     ncwc_objective = _adapt_ncwc_objective(objective_func, len(params_x), len(params_y1))
     ncwc_metrics = _adapt_ncwc_metrics(metrics_func, len(params_x), len(params_y1))
 
-    # TODO: if none, substitute with constant
-    lip_h = (
-            L_grad_f1
-            + 2 * rho * (L_grad_ftilde1 + L_gtilde + math.sqrt(num_constraints) * lagrange_bound * L_grad_gtilde)
+    computed_lip_h = (
+        L_grad_f1
+        + 2 * rho * (L_grad_ftilde1 + L_gtilde + math.sqrt(num_constraints) * lagrange_bound * L_grad_gtilde)
     )
-    # lip_h = 6.0
+    lip_h = computed_lip_h if lip_override is None else lip_override
 
     solver_stats = optimize_NCWC(
         params_x + params_y1 + params_y2,
@@ -688,5 +692,8 @@ def optimize_bilevel_constrained_minimax(
         "z_lambda_eps": clone_vals(params_z2)[0],
         "rho": rho,
         "epsilon_0": epsilon_0,
+        "lip_h": lip_h,
+        "computed_lip_h": computed_lip_h,
+        "lip_override": lip_override,
         "solver_stats": solver_stats,
     }

@@ -42,6 +42,7 @@ SMO_SUBPROBLEM_MAX_ITERS = 200
 GCMO_EPS = 1e-2
 GCMO_MAX_ITERS = 200
 GCMO_LAGRANGE_BOUND = 200
+GCMO_LIP_OVERRIDE = None
 
 # Common
 FEAS_TOL = 1e-2
@@ -102,6 +103,8 @@ GCMO_STAGE_METRICS = (
     "gcmo/stage/rho",
     "gcmo/stage/epsilon",
     "gcmo/stage/epsilon_0",
+    "gcmo/stage/lip_h",
+    "gcmo/stage/computed_lip_h",
     "gcmo/subproblem/num_outer_iters",
     "gcmo/subproblem/num_inner_iters",
     "gcmo/subproblem/final_diff",
@@ -199,13 +202,15 @@ def init_instance_run(problem_size, instance_idx, instance_position, num_instanc
         "gcmo_eps": GCMO_EPS,
         "gcmo_max_iters": GCMO_MAX_ITERS,
         "gcmo_lagrange_bound": GCMO_LAGRANGE_BOUND,
+        "gcmo_lip_override": GCMO_LIP_OVERRIDE,
     }
+    lip_label = f"lip{GCMO_LIP_OVERRIDE:g}" if GCMO_LIP_OVERRIDE is not None else "lipauto"
     run = wandb.init(
         project=WANDB_PROJECT,
         entity=WANDB_ENTITY,
         mode=WANDB_MODE,
         group=f"{SOLVER_METHOD}-n{n_val}-m{m_val}-l{l_val}",
-        name=f"{SOLVER_METHOD}-n{n_val}-m{m_val}-l{l_val}-idx{instance_idx}-seed{SEED}-lip6",
+        name=f"{SOLVER_METHOD}-n{n_val}-m{m_val}-l{l_val}-idx{instance_idx}-seed{SEED}-{lip_label}",
         tags=list(WANDB_TAGS),
         config=config,
         reinit=True,
@@ -931,6 +936,7 @@ def run_single_instance_gcmo(instance_idx, problem_size, instance_position, num_
             objective_func=upper_smooth,
             metrics_func=evaluate_ncwc_iterate,
             progress_callback=ncwc_progress_callback,
+            lip_override=GCMO_LIP_OVERRIDE,
         )
 
         x_final = x_tensor.detach().clone()
@@ -965,6 +971,8 @@ def run_single_instance_gcmo(instance_idx, problem_size, instance_position, num_
                 "gcmo/stage/rho": solver_result["rho"],
                 "gcmo/stage/epsilon": GCMO_EPS,
                 "gcmo/stage/epsilon_0": solver_result["epsilon_0"],
+                "gcmo/stage/lip_h": solver_result["lip_h"],
+                "gcmo/stage/computed_lip_h": solver_result["computed_lip_h"],
                 "gcmo/subproblem/num_outer_iters": diagnostics["subproblem_num_outer_iters"],
                 "gcmo/subproblem/num_inner_iters": diagnostics["subproblem_num_inner_iters"],
                 "gcmo/subproblem/final_diff": diagnostics["subproblem_final_diff"],
