@@ -147,6 +147,11 @@ class Minimax_SCSC(Optimizer):
                 x_diff = add_vals(x_k_t, scale_vals(x_k_m1, -1))
                 y_diff = add_vals(y_k_t, scale_vals(y_k_m1, -1))
                 rhs = (1 / self.gamma_x) * compute_norm(x_diff) ** 2 + (1 / self.gamma_y) * compute_norm(y_diff) ** 2
+                if not torch.isfinite(lhs) or not torch.isfinite(rhs):
+                    raise RuntimeError(
+                        f"Minimax_SCSC encountered non-finite line-search values "
+                        f"at outer={k}, inner={t}: lhs={float(lhs.item())}, rhs={float(rhs.item())}"
+                    )
                 if lhs <= rhs + 1e-8 or t > 10000:
                     break
 
@@ -234,6 +239,8 @@ class Minimax_SCSC(Optimizer):
             )
 
             delta = compute_norm(delta_x + delta_y)
+            if not torch.isfinite(delta):
+                raise RuntimeError(f"Minimax_SCSC encountered non-finite stationarity delta at outer={k}")
             final_delta = float(delta.item())
             num_outer_iters = k + 1
             num_inner_iters+= t

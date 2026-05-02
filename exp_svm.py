@@ -52,9 +52,9 @@ SOLVER_METHOD = "fop"
 # FOP practical variant.
 BASE_RHO = 5.0
 FINAL_EPS = 1e-2
-MAX_OUTER_ITERS = 200
-ALG4_MAX_ITERS = 200
-FOP_WARM_START_MAX_ITERS = 200
+MAX_OUTER_ITERS = 1000
+ALG4_MAX_ITERS = 1000
+FOP_WARM_START_MAX_ITERS = 1000
 
 # SMO.
 SMO_EPS = 1e-2
@@ -65,13 +65,13 @@ SMO_WARM_START_MAX_ITERS = 200
 
 # Deterministic minimax method.
 MINIMAX_EPS = 1e-2
-MINIMAX_MAX_ITERS = 200
-MINIMAX_LAGRANGE_BOUND = 200.0
+MINIMAX_MAX_ITERS = 1000
+MINIMAX_LAGRANGE_BOUND = 1000.0
 
 # Common stopping/reporting controls.
 FEAS_TOL = 1e-2
 LOWER_GAP_TOL = 1e-2
-LOWER_REFERENCE_SOLVER = "scipy"  # "scipy" or "cvxpy" if cvxpy is installed.
+LOWER_REFERENCE_SOLVER = "cvxpy"  # "scipy" or "cvxpy" if cvxpy is installed.
 LOWER_REFERENCE_MAXITER = 1000
 LOWER_REFERENCE_FTOL = 1e-9
 VERBOSE = True
