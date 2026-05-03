@@ -666,6 +666,7 @@ def optimize_bilevel_constrained_minimax(
         + 2 * rho * (L_grad_ftilde1 + L_gtilde + math.sqrt(num_constraints) * lagrange_bound * L_grad_gtilde)
     )
     lip_h = computed_lip_h if lip_override is None else lip_override
+    print(f"Using lip_h={lip_h:.3e} (computed {computed_lip_h:.3e}, override {lip_override})")
 
     solver_stats = optimize_NCWC(
         params_x + params_y1 + params_y2,
