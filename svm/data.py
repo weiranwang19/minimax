@@ -9,9 +9,9 @@ from sklearn.datasets import load_svmlight_file
 
 DEFAULT_DATASETS = (
     # "breast-cancer_scale",
-    # "heart_scale",
+    "heart_scale",
     # "ionosphere_scale",
-    "german.numer_scale",
+    # "german.numer_scale",
     # "australian_scale",
 )
 

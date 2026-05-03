@@ -47,27 +47,29 @@ SEED = 0
 SAVE_PROCESSED_DATA = True
 
 # Solver selection: "fop", "smo", or "minimax".
-SOLVER_METHOD = "fop"
+SOLVER_METHOD = "smo"
 
 # FOP practical variant.
 BASE_RHO = 5.0
-FINAL_EPS = 1e-2
-MAX_OUTER_ITERS = 30
-ALG4_MAX_ITERS = 10
+FINAL_EPS = 0.01
+MAX_OUTER_ITERS = 100
+ALG4_MAX_ITERS = 1000
 FOP_WARM_START_MAX_ITERS = 1000
 
 # SMO.
 SMO_EPS = 0.01
-SMO_EPSILON_0 = 1.0
-SMO_TAU = 0.7
-SMO_SUBPROBLEM_MAX_ITERS = 10
-SMO_WARM_START_MAX_ITERS = 1000
+SMO_EPSILON_0 = 1
+SMO_TAU = 0.2
+SMO_SUBPROBLEM_MAX_ITERS = 1000
+SMO_WARM_START_MAX_ITERS = 100
 
 # Deterministic minimax method.
-MINIMAX_EPS = 1e-2
+MINIMAX_EPS = 0.01
 MINIMAX_MAX_ITERS = 1000
 MINIMAX_LAGRANGE_BOUND = 100.0
-MINIMAX_LIP_OVERRIDE = 1000.0
+MINIMAX_LIP_OVERRIDE = 2000.0
+MINIMAX_WARM_START_LOWER = True
+MINIMAX_WARM_START_MAX_ITERS = 1000
 
 # Common stopping/reporting controls.
 FEAS_TOL = 1e-2
@@ -165,6 +167,8 @@ def _serialize_config():
         "minimax_max_iters": MINIMAX_MAX_ITERS,
         "minimax_lagrange_bound": MINIMAX_LAGRANGE_BOUND,
         "minimax_lip_override": MINIMAX_LIP_OVERRIDE,
+        "minimax_warm_start_lower": MINIMAX_WARM_START_LOWER,
+        "minimax_warm_start_max_iters": MINIMAX_WARM_START_MAX_ITERS,
         "feas_tol": FEAS_TOL,
         "lower_gap_tol": LOWER_GAP_TOL,
         "lower_reference_solver": LOWER_REFERENCE_SOLVER,
@@ -204,6 +208,7 @@ def init_run(dataset_name, split_idx):
         for metric_name in (
             "ncwc/upper_obj",
             "ncwc/feas",
+            "ncwc/lower_gap",
             "ncwc/val_accuracy",
             "ncwc/final_diff",
             "ncwc/completed_outer_iters",
@@ -386,6 +391,7 @@ def build_ncwc_progress_logger(run):
                 "ncwc/cumulative_inner_iters": cumulative_inner_iters,
                 "ncwc/upper_obj": metrics.get("upper_obj", payload.get("objective")),
                 "ncwc/feas": metrics.get("feas"),
+                "ncwc/lower_gap": metrics.get("lower_gap"),
                 "ncwc/val_accuracy": metrics.get("val_accuracy"),
                 "ncwc/final_diff": payload.get("final_diff"),
                 "ncwc/completed_outer_iters": payload.get("completed_outer_iters"),
@@ -601,7 +607,7 @@ def run_single_instance_fop(dataset_name, split_idx):
         subproblem_max_iter=ALG4_MAX_ITERS,
         max_outer_iters=MAX_OUTER_ITERS,
         objective_func=problem.upper_smooth,
-        metrics_func=lambda x_vals, y_vals: _cheap_iterate_metrics(problem, x_vals, y_vals),
+        metrics_func=reference_iterate_metrics,
         evaluate_iterate=lambda x_vals, y_vals: _reference_iterate_metrics(
             problem,
             reference_solver,
@@ -709,7 +715,7 @@ def run_single_instance_smo(dataset_name, split_idx):
         verbose=VERBOSE,
         log_every=SOLVER_LOG_EVERY,
         objective_func=problem.upper_smooth,
-        metrics_func=lambda x_vals, y_vals: _cheap_iterate_metrics(problem, x_vals, y_vals),
+        metrics_func=reference_iterate_metrics,
         progress_callback=ncwc_progress_callback,
     )
 
@@ -775,9 +781,12 @@ def run_single_instance_minimax(dataset_name, split_idx):
         verbose=VERBOSE,
         log_every=SOLVER_LOG_EVERY,
         objective_func=problem.upper_smooth,
-        metrics_func=lambda x_vals, y_vals: _cheap_iterate_metrics(problem, x_vals, y_vals),
+        metrics_func=reference_iterate_metrics,
         progress_callback=ncwc_progress_callback,
         lip_override=MINIMAX_LIP_OVERRIDE,
+        warm_start_lower=MINIMAX_WARM_START_LOWER,
+        warm_start_max_iter=MINIMAX_WARM_START_MAX_ITERS,
+        warm_start_D_y=problem.compute_d_y(),
     )
 
     c_final = c_tensor.detach().clone()

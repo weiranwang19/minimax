@@ -587,11 +587,17 @@ def optimize_bilevel_constrained_minimax(
         metrics_func=None,
         progress_callback=None,
         lip_override=None,
+        warm_start_lower=False,
+        warm_start_max_iter=None,
+        warm_start_D_y=None,
+        warm_start_epsilon=None,
 ):
     """
     Our proposed method for the constrained penalty reformulation.
 
     Using the Lagrangian formulation of the lower level problem, we solve only one instance of NCWC problem.
+    When warm_start_lower is enabled, initialize the lower primal-dual block
+    with AGD on a smooth quadratic-penalty lower subproblem.
     """
 
     if epsilon <= 0:
@@ -604,6 +610,12 @@ def optimize_bilevel_constrained_minimax(
         lip_override = float(lip_override)
         if not math.isfinite(lip_override) or lip_override <= 0:
             raise ValueError(f"Invalid lip_override: {lip_override}")
+    if warm_start_max_iter is not None and warm_start_max_iter < 0:
+        raise ValueError(f"Invalid warm_start_max_iter: {warm_start_max_iter}")
+    if warm_start_D_y is not None and warm_start_D_y <= 0:
+        raise ValueError(f"Invalid warm_start_D_y: {warm_start_D_y}")
+    if warm_start_epsilon is not None and warm_start_epsilon <= 0:
+        raise ValueError(f"Invalid warm_start_epsilon: {warm_start_epsilon}")
     if log_every <= 0:
         raise ValueError(f"Invalid log_every: {log_every}")
 
@@ -613,6 +625,12 @@ def optimize_bilevel_constrained_minimax(
         raise ValueError("params_x must contain at least one tensor")
     if not params_y1:
         raise ValueError("params_y must contain at least one tensor")
+    prox_x_funcs = list(prox_x) if isinstance(prox_x, (list, tuple)) else _expand_prox_spec(prox_x, len(params_x))
+    prox_y1_funcs = list(prox_y1) if isinstance(prox_y1, (list, tuple)) else _expand_prox_spec(prox_y1, len(params_y1))
+    if len(prox_x_funcs) != len(params_x):
+        raise ValueError(f"Expected {len(params_x)} proximal operators for x, got {len(prox_x_funcs)}")
+    if len(prox_y1_funcs) != len(params_y1):
+        raise ValueError(f"Expected {len(params_y1)} proximal operators for y, got {len(prox_y1_funcs)}")
 
     # Note we are transforming the lower level problem into unconstrained minimax, so we use settings in Algorithm 2.
     rho = epsilon ** -1
@@ -634,14 +652,46 @@ def optimize_bilevel_constrained_minimax(
         # Lagrange multipliers are box-constrained by the assumed dual bound.
         return torch.clamp(v, min=0.0, max=float(lagrange_bound))
 
-    # TODO: add SCSC step to compute approximate minimax point of lower_z1_z2, fix the current x, minimize over z1 and maximize over z2, use them as init for y1 and y2.
-    # def h_warm_start():
-    #     return lower_smooth(params_x, params_z1) + torch.dot(params_z2[0], lower_constraints(params_x, params_z1))
+    warm_start_stats = None
+    if warm_start_lower:
+        warm_D_y = D_y if warm_start_D_y is None else warm_start_D_y
+        warm_epsilon = epsilon if warm_start_epsilon is None else warm_start_epsilon
+        warm_mu = rho ** 2
 
-    # SCSC()
-    # assign_vars(params_y1, xx)
-    # assign_vars(params_y2, yy)
-        
+        def smooth_lower_penalty(y_vars):
+            constraint_y = lower_constraints(params_x, y_vars)
+            return lower_smooth(params_x, y_vars) + warm_mu * positive_part_norm_sq(constraint_y)
+
+        warm_L = L_grad_ftilde1 + 2.0 * warm_mu * (
+            L_gtilde ** 2 + gtilde_hi * L_grad_gtilde
+        )
+        y_init, warm_start_stats = agd_convex(
+            clone_vals(params_y1),
+            smooth_lower_penalty,
+            prox_y1_funcs,
+            warm_L,
+            warm_epsilon,
+            warm_D_y,
+            max_iter=warm_start_max_iter,
+        )
+        warm_start_stats.update(
+            {
+                "mu": warm_mu,
+                "epsilon": warm_epsilon,
+                "D_y": warm_D_y,
+                "L_grad_phi": warm_L,
+            }
+        )
+        assign_vals(params_y1, y_init)
+        assign_vals(params_z1, y_init)
+        with torch.no_grad():
+            lambda_init = prox_lagrange_multipliers(
+                warm_mu * _positive_part(lower_constraints(params_x, params_y1)),
+                coeff=1.0,
+            ).detach()
+        assign_vals(params_y2, [lambda_init])
+        assign_vals(params_z2, [lambda_init])
+
     def h_lagrangian():
         upper_term = upper_smooth(params_x, params_y1)
         lower_z1_y2 = lower_smooth(params_x, params_z1) + torch.dot(params_y2[0], lower_constraints(params_x, params_z1))
@@ -653,11 +703,10 @@ def optimize_bilevel_constrained_minimax(
         )
 
     # We minimize over x, y1, y2 and maximize over z1, z2.
-    prox_x_y1_y2 = _expand_prox_spec(prox_x, len(params_x)) + _expand_prox_spec(
-        _scale_prox_spec(prox_y1, rho),
-        len(params_y1),
-    ) + [_scale_prox_spec(prox_lagrange_multipliers, rho)]
-    prox_z1_z2 = _expand_prox_spec(_scale_prox_spec(prox_y1, rho), len(params_z1)) + [_scale_prox_spec(prox_lagrange_multipliers, rho)]
+    prox_x_y1_y2 = prox_x_funcs + [_scale_prox_spec(p, rho) for p in prox_y1_funcs] + [
+        _scale_prox_spec(prox_lagrange_multipliers, rho)
+    ]
+    prox_z1_z2 = [_scale_prox_spec(p, rho) for p in prox_y1_funcs] + [_scale_prox_spec(prox_lagrange_multipliers, rho)]
     ncwc_objective = _adapt_ncwc_objective(objective_func, len(params_x), len(params_y1))
     ncwc_metrics = _adapt_ncwc_metrics(metrics_func, len(params_x), len(params_y1))
 
@@ -696,5 +745,7 @@ def optimize_bilevel_constrained_minimax(
         "lip_h": lip_h,
         "computed_lip_h": computed_lip_h,
         "lip_override": lip_override,
+        "warm_start_lower": warm_start_lower,
+        "warm_start_stats": warm_start_stats,
         "solver_stats": solver_stats,
     }
