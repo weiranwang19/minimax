@@ -42,9 +42,18 @@ DISPLAY_NAMES = [
     "Ours",
     r"Ours (Tuned $L_{\nabla h}$)",
 ]
-# upper_obj, lower_gap, feas
-METRIC = "ncwc/upper_obj" 
+# Set METRIC to a W&B key string, e.g. "ncwc/lower_gap", or to a composite
+# spec. Composite "value" functions receive a dict of finite float values.
+MAX_FEAS_LOWER_GAP_METRIC = {
+    "name": "ncwc/max_feas_lower_gap",
+    "keys": ["ncwc/feas", "ncwc/lower_gap"],
+    "value": lambda values: max(values["ncwc/feas"], values["ncwc/lower_gap"]),
+}
+# METRIC = MAX_FEAS_LOWER_GAP_METRIC
+METRIC = "ncwc/upper_obj"
 X_LIM = (0.0, 6.0)  # In millions of iterations. Use None for full range.
+Y_LIM = None
+# Y_LIM = (-0.01, 1.0)  # Use None for auto range, or e.g. (-8.0, 1.0).
 
 # Options: None, "log".
 # "log" plots log10(max(abs(y), Y_TRANSFORM_FLOOR)), so lower is better.
@@ -53,14 +62,15 @@ Y_TRANSFORM_FLOOR = 1e-14
 SHOW_TRANSFORMED_Y_LABEL = False
 
 # Figure sizing. These defaults are tuned for compact, square publication plots.
-FIG_SIZE = 3.15
+FIG_SIZE_X = 3
+FIG_SIZE_Y = 2
 FONT_SIZE = 9
 TICK_SIZE = 8
 LEGEND_TEXT_SIZE = 7.5
 LEGEND_BOX_SIZE = 0.28
 LEGEND_HANDLE_LENGTH = 1.45
 LEGEND_LOC = "best"
-CURVE_SIZE = 2.0
+CURVE_SIZE = 1.0
 MAX_POINTS_PER_CURVE = 2500
 
 OUTPUT_DIR = Path("results")
@@ -98,23 +108,49 @@ def _normalize_display_names():
     raise ValueError("DISPLAY_NAMES must have the same length as RUN_NAMES.")
 
 
+def _metric_name():
+    if isinstance(METRIC, str):
+        return METRIC
+    return METRIC["name"]
+
+
+def _metric_keys():
+    if isinstance(METRIC, str):
+        return [METRIC]
+    return list(METRIC["keys"])
+
+
+def _metric_value(row):
+    if isinstance(METRIC, str):
+        return row.get(METRIC)
+
+    values = {}
+    for key in _metric_keys():
+        value = _coerce_float(row.get(key))
+        if value is None:
+            return None
+        values[key] = value
+    return METRIC["value"](values)
+
+
 def _x_metric_candidates():
     if X_METRIC:
         return [X_METRIC]
 
+    metric_name = _metric_name()
     candidates = []
-    if METRIC.startswith("ncwc/"):
+    if metric_name.startswith("ncwc/"):
         candidates.extend(
             [
                 "ncwc/cumulative_scsc_inner_iters",
                 "ncwc/cumulative_inner_iters",
             ]
         )
-    elif METRIC.startswith("fop/stage/"):
+    elif metric_name.startswith("fop/stage/"):
         candidates.append("fop/stage/index")
-    elif METRIC.startswith("smo/stage/"):
+    elif metric_name.startswith("smo/stage/"):
         candidates.append("smo/stage/index")
-    elif METRIC.startswith("gcmo/stage/"):
+    elif metric_name.startswith("gcmo/stage/"):
         candidates.append("gcmo/stage/index")
 
     candidates.append("_step")
@@ -157,11 +193,12 @@ def _coerce_float(value):
 
 def _history_xy(run):
     for x_key in _x_metric_candidates():
-        rows_iter = iter(run.scan_history(keys=[METRIC, x_key], page_size=1000))
+        scan_keys = list(dict.fromkeys(_metric_keys() + [x_key]))
+        rows_iter = iter(run.scan_history(keys=scan_keys, page_size=1000))
         rows = []
         for row in rows_iter:
             x_val = _coerce_float(row.get(x_key))
-            y_val = _coerce_float(row.get(METRIC))
+            y_val = _coerce_float(_metric_value(row))
             if x_val is not None and y_val is not None:
                 rows.append((x_val / 1_000_000.0, y_val))
 
@@ -169,7 +206,7 @@ def _history_xy(run):
             rows.sort(key=lambda item: item[0])
             return rows, x_key
 
-    raise ValueError(f'Run "{run.name}" has no finite rows for metric "{METRIC}".')
+    raise ValueError(f'Run "{run.name}" has no finite rows for metric "{_metric_name()}".')
 
 
 def _clip_x_range(rows):
@@ -227,7 +264,7 @@ def _sanitize_filename(value):
 
 def _output_path():
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    stem = OUTPUT_BASENAME or f"plot_{_sanitize_filename(METRIC)}"
+    stem = OUTPUT_BASENAME or f"plot_{_sanitize_filename(_metric_name())}"
     if OUTPUT_BASENAME is None and Y_TRANSFORM is not None:
         stem = f"{stem}_{_sanitize_filename(Y_TRANSFORM)}"
     return OUTPUT_DIR / f"{stem}.pdf"
@@ -270,17 +307,19 @@ def main():
         }
     )
 
-    fig, ax = plt.subplots(figsize=(FIG_SIZE, FIG_SIZE), constrained_layout=True)
+    fig, ax = plt.subplots(figsize=(FIG_SIZE_X, FIG_SIZE_Y), constrained_layout=True)
     for display_name, x_vals, y_vals in series:
         ax.plot(x_vals, y_vals, linewidth=CURVE_SIZE, label=display_name)
 
     ax.set_xlabel("Million Iters")
     if SHOW_TRANSFORMED_Y_LABEL and Y_TRANSFORM == "log":
-        ax.set_ylabel(r"$-\log_{10}(|\mathrm{metric}|)$")
+        ax.set_ylabel(r"$\log_{10}(|\mathrm{metric}|)$")
     else:
         ax.set_ylabel("")
     if X_LIM is not None:
         ax.set_xlim(*X_LIM)
+    if Y_LIM is not None:
+        ax.set_ylim(*Y_LIM)
     ax.xaxis.set_major_locator(MaxNLocator(nbins=5, min_n_ticks=3))
     ax.yaxis.set_major_locator(MaxNLocator(nbins=5, min_n_ticks=3))
     ax.margins(x=0.02, y=0.06)
