@@ -6,6 +6,7 @@ waterbirds
 minimax-ckpts
 svm/models/
 svm/results/
+results/
 svm/__pycache__/
 
 tea_debug.log
