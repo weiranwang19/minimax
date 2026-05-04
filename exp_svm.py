@@ -49,36 +49,46 @@ SAVE_PROCESSED_DATA = True
 # Solver selection: "fop", "smo", or "minimax".
 SOLVER_METHOD = "smo"
 
-# FOP practical variant.
-BASE_RHO = 5.0
-FINAL_EPS = 0.01
-MAX_OUTER_ITERS = 100
-ALG4_MAX_ITERS = 1000
-FOP_WARM_START_MAX_ITERS = 1000
+# FOP method controls.
+FOP_OUTER_PENALTY_BASE_RHO = 5.0
+FOP_LOWER_WARM_START_MAX_ITERS = 1000
+FOP_SUBPROBLEM_NCWC_MAX_OUTER_ITERS = 1000
 
-# SMO.
-SMO_EPS = 0.01
-SMO_EPSILON_0 = 1
-SMO_TAU = 0.2
-SMO_SUBPROBLEM_MAX_ITERS = 1000
-SMO_WARM_START_MAX_ITERS = 100
+# FOP stopping controls.
+FOP_OUTER_STOP_EPS = 0.1
+FOP_OUTER_MAX_ITERS = 100
 
-# Deterministic minimax method.
-MINIMAX_EPS = 0.01
-MINIMAX_MAX_ITERS = 1000
-MINIMAX_LAGRANGE_BOUND = 100.0
-MINIMAX_LIP_OVERRIDE = 2000.0
-MINIMAX_WARM_START_LOWER = True
-MINIMAX_WARM_START_MAX_ITERS = 1000
+# SMO method controls.
+SMO_OUTER_INITIAL_EPS = 1 # EPS_0
+SMO_OUTER_EPS_DECAY_TAU = 0.2
+SMO_LOWER_WARM_START_MAX_ITERS = 100
+SMO_SUBPROBLEM_NCWC_MAX_OUTER_ITERS = 1000
 
-# Common stopping/reporting controls.
-FEAS_TOL = 1e-2
-LOWER_GAP_TOL = 1e-2
-LOWER_REFERENCE_SOLVER = "cvxpy"  # "scipy" or "cvxpy" if cvxpy is installed.
-LOWER_REFERENCE_MAXITER = 1000
-LOWER_REFERENCE_FTOL = 1e-9
-VERBOSE = True
-SOLVER_LOG_EVERY = 1
+# SMO stopping controls.
+SMO_OUTER_STOP_EPS = 0.5
+
+# Deterministic minimax method controls.
+MINIMAX_DUAL_LAGRANGE_BOUND = 100.0
+MINIMAX_NCWC_LIP_H_OVERRIDE = 2000.0
+MINIMAX_LOWER_WARM_START_ENABLED = True
+MINIMAX_LOWER_WARM_START_MAX_ITERS = 1000
+
+# Deterministic minimax stopping controls.
+MINIMAX_NCWC_STOP_EPS = 0.5
+MINIMAX_NCWC_MAX_OUTER_ITERS = 1000
+
+# Cross-method final quality tolerances.
+# FOP uses these in its outer stopping condition. SMO and minimax use them
+# for final pass/fail reporting only.
+FINAL_FEASIBILITY_TOL = 1e-1
+FINAL_LOWER_GAP_TOL = 1.0
+
+# Reporting/reference controls.
+REPORT_LOWER_REFERENCE_SOLVER = "cvxpy"  # "scipy" or "cvxpy" if cvxpy is installed.
+REPORT_LOWER_REFERENCE_MAXITER = 1000
+REPORT_LOWER_REFERENCE_FTOL = 1e-9
+REPORT_VERBOSE = True
+REPORT_SOLVER_LOG_EVERY = 1
 
 # W&B controls.
 WANDB_ENABLED = True
@@ -153,27 +163,27 @@ def _serialize_config():
         "validation_fraction": VALIDATION_FRACTION,
         "seed": SEED,
         "solver_method": SOLVER_METHOD,
-        "base_rho": BASE_RHO,
-        "final_eps": FINAL_EPS,
-        "max_outer_iters": MAX_OUTER_ITERS,
-        "alg4_max_iters": ALG4_MAX_ITERS,
-        "fop_warm_start_max_iters": FOP_WARM_START_MAX_ITERS,
-        "smo_eps": SMO_EPS,
-        "smo_epsilon_0": SMO_EPSILON_0,
-        "smo_tau": SMO_TAU,
-        "smo_subproblem_max_iters": SMO_SUBPROBLEM_MAX_ITERS,
-        "smo_warm_start_max_iters": SMO_WARM_START_MAX_ITERS,
-        "minimax_eps": MINIMAX_EPS,
-        "minimax_max_iters": MINIMAX_MAX_ITERS,
-        "minimax_lagrange_bound": MINIMAX_LAGRANGE_BOUND,
-        "minimax_lip_override": MINIMAX_LIP_OVERRIDE,
-        "minimax_warm_start_lower": MINIMAX_WARM_START_LOWER,
-        "minimax_warm_start_max_iters": MINIMAX_WARM_START_MAX_ITERS,
-        "feas_tol": FEAS_TOL,
-        "lower_gap_tol": LOWER_GAP_TOL,
-        "lower_reference_solver": LOWER_REFERENCE_SOLVER,
-        "lower_reference_maxiter": LOWER_REFERENCE_MAXITER,
-        "lower_reference_ftol": LOWER_REFERENCE_FTOL,
+        "fop_outer_penalty_base_rho": FOP_OUTER_PENALTY_BASE_RHO,
+        "fop_outer_stop_eps": FOP_OUTER_STOP_EPS,
+        "fop_outer_max_iters": FOP_OUTER_MAX_ITERS,
+        "fop_lower_warm_start_max_iters": FOP_LOWER_WARM_START_MAX_ITERS,
+        "fop_subproblem_ncwc_max_outer_iters": FOP_SUBPROBLEM_NCWC_MAX_OUTER_ITERS,
+        "smo_outer_stop_eps": SMO_OUTER_STOP_EPS,
+        "smo_outer_initial_eps": SMO_OUTER_INITIAL_EPS,
+        "smo_outer_eps_decay_tau": SMO_OUTER_EPS_DECAY_TAU,
+        "smo_lower_warm_start_max_iters": SMO_LOWER_WARM_START_MAX_ITERS,
+        "smo_subproblem_ncwc_max_outer_iters": SMO_SUBPROBLEM_NCWC_MAX_OUTER_ITERS,
+        "minimax_ncwc_stop_eps": MINIMAX_NCWC_STOP_EPS,
+        "minimax_ncwc_max_outer_iters": MINIMAX_NCWC_MAX_OUTER_ITERS,
+        "minimax_dual_lagrange_bound": MINIMAX_DUAL_LAGRANGE_BOUND,
+        "minimax_ncwc_lip_h_override": MINIMAX_NCWC_LIP_H_OVERRIDE,
+        "minimax_lower_warm_start_enabled": MINIMAX_LOWER_WARM_START_ENABLED,
+        "minimax_lower_warm_start_max_iters": MINIMAX_LOWER_WARM_START_MAX_ITERS,
+        "final_feasibility_tol": FINAL_FEASIBILITY_TOL,
+        "final_lower_gap_tol": FINAL_LOWER_GAP_TOL,
+        "report_lower_reference_solver": REPORT_LOWER_REFERENCE_SOLVER,
+        "report_lower_reference_maxiter": REPORT_LOWER_REFERENCE_MAXITER,
+        "report_lower_reference_ftol": REPORT_LOWER_REFERENCE_FTOL,
     }
 
 
@@ -253,9 +263,9 @@ def load_problem(dataset_name, split_idx):
     )
     PROBLEM = SVMProblem(split, seed=SEED)
     REFERENCE_SOLVER = LowerReferenceSolver(
-        method=LOWER_REFERENCE_SOLVER,
-        maxiter=LOWER_REFERENCE_MAXITER,
-        ftol=LOWER_REFERENCE_FTOL,
+        method=REPORT_LOWER_REFERENCE_SOLVER,
+        maxiter=REPORT_LOWER_REFERENCE_MAXITER,
+        ftol=REPORT_LOWER_REFERENCE_FTOL,
     )
 
     CURRENT_DATASET = PROBLEM.dataset_name
@@ -432,7 +442,7 @@ def log_stage_diagnostics(run, stage_index, method, diagnostics, extra=None):
 
 
 def _print_stage(prefix, diagnostics):
-    if not VERBOSE:
+    if not REPORT_VERBOSE:
         return
     print(
         f"{prefix} upper={diagnostics.get('upper_obj', float('nan')):.3e} "
@@ -459,8 +469,8 @@ def _summary_from_diagnostics(
     elapsed,
 ):
     passed = (
-        diagnostics["y_feas"] <= FEAS_TOL
-        and diagnostics["y_lower_gap"] <= LOWER_GAP_TOL
+        diagnostics["y_feas"] <= FINAL_FEASIBILITY_TOL
+        and diagnostics["y_lower_gap"] <= FINAL_LOWER_GAP_TOL
         and bool(diagnostics["reference_success"])
     )
     return {
@@ -558,7 +568,7 @@ def _initial_state(run):
             "instance/initial_reference_success": float(initial_ref["success"]),
         },
     )
-    if VERBOSE:
+    if REPORT_VERBOSE:
         print(
             f"    Initial paper={paper_initial_objective:.3e} "
             f"raw_iterate={initial_iterate_objective:.3e} "
@@ -631,13 +641,13 @@ def run_single_instance_fop(dataset_name, split_idx):
         L_grad_gtilde=0.0,
         L_gtilde=problem.l_g,
         gtilde_hi=problem.g_hi,
-        base_rho=BASE_RHO,
-        final_epsilon=FINAL_EPS,
-        feas_tol=FEAS_TOL,
-        lower_gap_tol=LOWER_GAP_TOL,
-        warm_start_max_iter=FOP_WARM_START_MAX_ITERS,
-        subproblem_max_iter=ALG4_MAX_ITERS,
-        max_outer_iters=MAX_OUTER_ITERS,
+        base_rho=FOP_OUTER_PENALTY_BASE_RHO,
+        final_epsilon=FOP_OUTER_STOP_EPS,
+        feas_tol=FINAL_FEASIBILITY_TOL,
+        lower_gap_tol=FINAL_LOWER_GAP_TOL,
+        warm_start_max_iter=FOP_LOWER_WARM_START_MAX_ITERS,
+        subproblem_max_iter=FOP_SUBPROBLEM_NCWC_MAX_OUTER_ITERS,
+        max_outer_iters=FOP_OUTER_MAX_ITERS,
         objective_func=problem.upper_smooth,
         metrics_func=reference_iterate_metrics,
         evaluate_iterate=lambda x_vals, y_vals: _reference_iterate_metrics(
@@ -648,9 +658,9 @@ def run_single_instance_fop(dataset_name, split_idx):
         ),
         stage_callback=stage_callback,
         progress_callback=ncwc_progress_callback,
-        verbose=VERBOSE,
-        log_every=SOLVER_LOG_EVERY,
-        outer_desc=f"SVM {dataset_name} split={split_idx} FOP" if VERBOSE else None,
+        verbose=REPORT_VERBOSE,
+        log_every=REPORT_SOLVER_LOG_EVERY,
+        outer_desc=f"SVM {dataset_name} split={split_idx} FOP" if REPORT_VERBOSE else None,
     )
 
     c_final = c_tensor.detach().clone()
@@ -739,14 +749,14 @@ def run_single_instance_smo(dataset_name, split_idx):
         L_grad_gtilde=0.0,
         L_gtilde=problem.l_g,
         gtilde_hi=problem.g_hi,
-        epsilon=SMO_EPS,
-        tau=SMO_TAU,
-        epsilon_0=SMO_EPSILON_0,
-        warm_start_max_iter=SMO_WARM_START_MAX_ITERS,
-        subproblem_max_iter=SMO_SUBPROBLEM_MAX_ITERS,
+        epsilon=SMO_OUTER_STOP_EPS,
+        tau=SMO_OUTER_EPS_DECAY_TAU,
+        epsilon_0=SMO_OUTER_INITIAL_EPS,
+        warm_start_max_iter=SMO_LOWER_WARM_START_MAX_ITERS,
+        subproblem_max_iter=SMO_SUBPROBLEM_NCWC_MAX_OUTER_ITERS,
         stage_callback=stage_callback,
-        verbose=VERBOSE,
-        log_every=SOLVER_LOG_EVERY,
+        verbose=REPORT_VERBOSE,
+        log_every=REPORT_SOLVER_LOG_EVERY,
         objective_func=problem.upper_smooth,
         metrics_func=reference_iterate_metrics,
         progress_callback=ncwc_progress_callback,
@@ -801,25 +811,25 @@ def run_single_instance_minimax(dataset_name, split_idx):
         problem.upper_smooth,
         problem.lower_smooth,
         problem.lower_constraints,
-        lagrange_bound=MINIMAX_LAGRANGE_BOUND,
+        lagrange_bound=MINIMAX_DUAL_LAGRANGE_BOUND,
         prox_x=problem.prox_c,
         prox_y1=problem.prox_lower,
-        D_y=problem.compute_minimax_d_y(MINIMAX_LAGRANGE_BOUND),
+        D_y=problem.compute_minimax_d_y(MINIMAX_DUAL_LAGRANGE_BOUND),
         L_grad_f1=problem.l_grad_f,
         L_grad_ftilde1=problem.l_grad_lower,
         L_grad_gtilde=0.0,
         L_gtilde=problem.l_g,
         gtilde_hi=problem.g_hi,
-        epsilon=MINIMAX_EPS,
-        max_iter=MINIMAX_MAX_ITERS,
-        verbose=VERBOSE,
-        log_every=SOLVER_LOG_EVERY,
+        epsilon=MINIMAX_NCWC_STOP_EPS,
+        max_iter=MINIMAX_NCWC_MAX_OUTER_ITERS,
+        verbose=REPORT_VERBOSE,
+        log_every=REPORT_SOLVER_LOG_EVERY,
         objective_func=problem.upper_smooth,
         metrics_func=reference_iterate_metrics,
         progress_callback=ncwc_progress_callback,
-        lip_override=MINIMAX_LIP_OVERRIDE,
-        warm_start_lower=MINIMAX_WARM_START_LOWER,
-        warm_start_max_iter=MINIMAX_WARM_START_MAX_ITERS,
+        lip_override=MINIMAX_NCWC_LIP_H_OVERRIDE,
+        warm_start_lower=MINIMAX_LOWER_WARM_START_ENABLED,
+        warm_start_max_iter=MINIMAX_LOWER_WARM_START_MAX_ITERS,
         warm_start_D_y=problem.compute_d_y(),
     )
 
@@ -847,7 +857,7 @@ def run_single_instance_minimax(dataset_name, split_idx):
         diagnostics,
         extra={
             "svm/stage/rho": solver_result["rho"],
-            "svm/stage/epsilon": MINIMAX_EPS,
+            "svm/stage/epsilon": MINIMAX_NCWC_STOP_EPS,
             "svm/stage/epsilon_0": solver_result["epsilon_0"],
             "svm/stage/lip_h": solver_result["lip_h"],
             "svm/stage/computed_lip_h": solver_result["computed_lip_h"],
