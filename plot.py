@@ -56,7 +56,7 @@ Y_LIM = None
 # Y_LIM = (-0.01, 1.5)  # Use None for auto range, or e.g. (-8.0, 1.0).
 
 # Options: None, "log".
-# "log" plots log10(max(abs(y), Y_TRANSFORM_FLOOR)), so lower is better.
+# "log" uses a log-scaled y-axis via semilogy after flooring abs(y).
 Y_TRANSFORM = "log"
 Y_TRANSFORM_FLOOR = 1e-14
 SHOW_TRANSFORMED_Y_LABEL = False
@@ -234,7 +234,7 @@ def _transform_y_value(y_val):
         return y_val
 
     if Y_TRANSFORM == "log":
-        return math.log10(max(abs(y_val), Y_TRANSFORM_FLOOR))
+        return max(abs(y_val), Y_TRANSFORM_FLOOR)
 
     raise ValueError(f'Unknown Y_TRANSFORM "{Y_TRANSFORM}".')
 
@@ -310,12 +310,13 @@ def main():
     )
 
     fig, ax = plt.subplots(figsize=(FIG_SIZE_X, FIG_SIZE_Y), constrained_layout=True)
+    plot_func = ax.semilogy if Y_TRANSFORM == "log" else ax.plot
     for display_name, x_vals, y_vals in series:
-        ax.plot(x_vals, y_vals, linewidth=CURVE_SIZE, label=display_name)
+        plot_func(x_vals, y_vals, linewidth=CURVE_SIZE, label=display_name)
 
     ax.set_xlabel("Million Iters")
     if SHOW_TRANSFORMED_Y_LABEL and Y_TRANSFORM == "log":
-        ax.set_ylabel(r"$\log_{10}(|\mathrm{metric}|)$")
+        ax.set_ylabel(_metric_name())
     else:
         ax.set_ylabel("")
     if X_LIM is not None:
