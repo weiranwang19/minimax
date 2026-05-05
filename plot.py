@@ -44,20 +44,20 @@ DISPLAY_NAMES = [
 ]
 # Set METRIC to a W&B key string, e.g. "ncwc/lower_gap", or to a composite
 # spec. Composite "value" functions receive a dict of finite float values.
-MAX_FEAS_LOWER_GAP_METRIC = {
-    "name": "ncwc/max_feas_lower_gap",
-    "keys": ["ncwc/feas", "ncwc/lower_gap"],
-    "value": lambda values: max(values["ncwc/feas"], values["ncwc/lower_gap"]),
-}
+# MAX_FEAS_LOWER_GAP_METRIC = {
+#     "name": "ncwc/max_feas_lower_gap",
+#     "keys": ["ncwc/feas", "ncwc/lower_gap"],
+#     "value": lambda values: max(values["ncwc/feas"], values["ncwc/lower_gap"]),
+# }
 # METRIC = MAX_FEAS_LOWER_GAP_METRIC
-METRIC = "ncwc/upper_obj"
+METRIC = "ncwc/lower_gap"
 X_LIM = (0.0, 6.0)  # In millions of iterations. Use None for full range.
 Y_LIM = None
-# Y_LIM = (-0.01, 1.0)  # Use None for auto range, or e.g. (-8.0, 1.0).
+# Y_LIM = (-0.01, 1.5)  # Use None for auto range, or e.g. (-8.0, 1.0).
 
 # Options: None, "log".
 # "log" plots log10(max(abs(y), Y_TRANSFORM_FLOOR)), so lower is better.
-Y_TRANSFORM = None
+Y_TRANSFORM = "log"
 Y_TRANSFORM_FLOOR = 1e-14
 SHOW_TRANSFORMED_Y_LABEL = False
 
@@ -66,11 +66,13 @@ FIG_SIZE_X = 3
 FIG_SIZE_Y = 2
 FONT_SIZE = 9
 TICK_SIZE = 8
-LEGEND_TEXT_SIZE = 7.5
-LEGEND_BOX_SIZE = 0.28
+LEGEND_TEXT_SIZE = 9.0
+LEGEND_FONT_WEIGHT = "bold"
+LEGEND_BOX_SIZE = 0.8
 LEGEND_HANDLE_LENGTH = 1.45
 LEGEND_LOC = "best"
-CURVE_SIZE = 1.0
+SHOW_LEGEND = False
+CURVE_SIZE = 2.0
 MAX_POINTS_PER_CURVE = 2500
 
 OUTPUT_DIR = Path("results")
@@ -327,15 +329,17 @@ def main():
     ax.spines["top"].set_visible(False)
     ax.spines["right"].set_visible(False)
     ax.tick_params(axis="both", length=3, width=0.8)
-    ax.legend(
-        loc=LEGEND_LOC,
-        frameon=True,
-        framealpha=0.92,
-        borderpad=LEGEND_BOX_SIZE,
-        handlelength=LEGEND_HANDLE_LENGTH,
-        handletextpad=0.45,
-        labelspacing=0.25,
-    )
+    if SHOW_LEGEND:
+        ax.legend(
+            loc=LEGEND_LOC,
+            prop={"size": LEGEND_TEXT_SIZE, "weight": LEGEND_FONT_WEIGHT},
+            frameon=True,
+            framealpha=0.92,
+            borderpad=LEGEND_BOX_SIZE,
+            handlelength=LEGEND_HANDLE_LENGTH,
+            handletextpad=0.45,
+            labelspacing=0.25,
+        )
 
     output_path = _output_path()
     fig.savefig(output_path, bbox_inches="tight", pad_inches=0.015)
