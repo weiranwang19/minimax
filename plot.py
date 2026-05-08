@@ -20,7 +20,7 @@ import matplotlib
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
-from matplotlib.ticker import MaxNLocator
+from matplotlib.ticker import FixedLocator, FuncFormatter, LogLocator, MaxNLocator, NullFormatter
 
 import wandb
 
@@ -29,12 +29,12 @@ import wandb
 PROJECT = "minimax"
 ENTITY = None  # Set to your W&B entity/workspace if it is not configured locally.
 
-# Plot controls.
+# Plot controls.9,8,8,8/1,0,0,0 (used)
 RUN_NAMES = [
-    "fop-n400-m400-l20-inst9-seed0",
-    "smo-n400-m400-l20-idx8-seed0",
-    "gcmo-n400-m400-l20-idx8-seed0",
-    "gcmo-n400-m400-l20-idx8-seed0-lip6",
+    "fop-n400-m400-l20-inst1-seed0",
+    "smo-n400-m400-l20-idx0-seed0",
+    "gcmo-n400-m400-l20-idx0-seed0",
+    "gcmo-n400-m400-l20-idx0-seed0-lip6",
 ]
 DISPLAY_NAMES = [
     "FOP",
@@ -50,14 +50,15 @@ DISPLAY_NAMES = [
 #     "value": lambda values: max(values["ncwc/feas"], values["ncwc/lower_gap"]),
 # }
 # METRIC = MAX_FEAS_LOWER_GAP_METRIC
-METRIC = "ncwc/lower_gap"
+METRIC = "ncwc/feas"
 X_LIM = (0.0, 6.0)  # In millions of iterations. Use None for full range.
 Y_LIM = None
-# Y_LIM = (-0.01, 1.5)  # Use None for auto range, or e.g. (-8.0, 1.0).
+# Y_LIM = (-0.01, 0.8)  # Use None for auto range, or e.g. (-8.0, 1.0).
 
 # Options: None, "log".
 # "log" uses a log-scaled y-axis via semilogy after flooring abs(y).
 Y_TRANSFORM = "log"
+# Y_TRANSFORM = None
 Y_TRANSFORM_FLOOR = 1e-14
 SHOW_TRANSFORMED_Y_LABEL = False
 
@@ -272,6 +273,42 @@ def _output_path():
     return OUTPUT_DIR / f"{stem}.pdf"
 
 
+def _format_log10_exponent(value, _position):
+    if value <= 0.0 or not math.isfinite(value):
+        return ""
+
+    exponent = math.log10(value)
+    rounded_exponent = round(exponent)
+    if not math.isclose(exponent, rounded_exponent, rel_tol=0.0, abs_tol=1e-10):
+        return ""
+    return f"{rounded_exponent:d}"
+
+
+def _visible_even_log10_ticks(ax):
+    ymin, ymax = ax.get_ylim()
+    if ymin <= 0.0 or ymax <= 0.0:
+        return []
+
+    low_exponent = math.ceil(math.log10(ymin) - 1e-12)
+    high_exponent = math.floor(math.log10(ymax) + 1e-12)
+    first_even_exponent = 2 * math.ceil(low_exponent / 2)
+    last_even_exponent = 2 * math.floor(high_exponent / 2)
+    if first_even_exponent > last_even_exponent:
+        return []
+    return [10.0**exponent for exponent in range(first_even_exponent, last_even_exponent + 1, 2)]
+
+
+def _configure_axis_ticks(ax):
+    ax.xaxis.set_major_locator(MaxNLocator(nbins=5, min_n_ticks=3))
+    if Y_TRANSFORM == "log":
+        ax.yaxis.set_major_locator(FixedLocator(_visible_even_log10_ticks(ax)))
+        ax.yaxis.set_major_formatter(FuncFormatter(_format_log10_exponent))
+        ax.yaxis.set_minor_locator(LogLocator(base=10.0, subs=range(2, 10), numticks=60))
+        ax.yaxis.set_minor_formatter(NullFormatter())
+    else:
+        ax.yaxis.set_major_locator(MaxNLocator(nbins=5, min_n_ticks=3))
+
+
 def main():
     display_names = _normalize_display_names()
     api = wandb.Api()
@@ -323,8 +360,7 @@ def main():
         ax.set_xlim(*X_LIM)
     if Y_LIM is not None:
         ax.set_ylim(*Y_LIM)
-    ax.xaxis.set_major_locator(MaxNLocator(nbins=5, min_n_ticks=3))
-    ax.yaxis.set_major_locator(MaxNLocator(nbins=5, min_n_ticks=3))
+    _configure_axis_ticks(ax)
     ax.margins(x=0.02, y=0.06)
     ax.grid(True, linewidth=0.45, alpha=0.28)
     ax.spines["top"].set_visible(False)

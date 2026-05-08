@@ -11,7 +11,7 @@ from utils import clone_vals
 from bilevel_solvers import (
     optimize_bilevel_constrained_minimax,
     optimize_bilevel_constrained_smo,
-    optimize_bilevel_contrained_fop_practical,
+    optimize_bilevel_constrained_fop_practical,
 )
 
 
@@ -585,7 +585,7 @@ def run_single_instance_fop(instance_idx, problem_size, instance_position, num_i
     try:
         x_tensor = x_prev.clone().requires_grad_(True)
         y_tensor = y_prev.clone().requires_grad_(True)
-        solver_result = optimize_bilevel_contrained_fop_practical(
+        solver_result = optimize_bilevel_constrained_fop_practical(
             [x_tensor],
             [y_tensor],
             upper_smooth,

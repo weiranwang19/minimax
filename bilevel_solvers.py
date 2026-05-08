@@ -7,10 +7,12 @@ from agd import agd_convex
 
 
 def _expand_prox_spec(prox_func, count):
+    """Repeat a single proximal operator so it matches a parameter block list."""
     return [prox_func] * count
 
 
 def _scale_prox_spec(prox_func, scale):
+    """Scale a prox coefficient for paper objectives containing `scale * f2`."""
 
     def scaled(v, coeff):
         return prox_func(v, scale * coeff)
@@ -19,6 +21,7 @@ def _scale_prox_spec(prox_func, scale):
 
 
 def _adapt_ncwc_objective(objective_func, num_x, num_y):
+    """Adapt a bilevel `(x, y)` monitor to the concatenated NCWC min block."""
     if objective_func is None:
         return None
     if not callable(objective_func):
@@ -35,6 +38,7 @@ def _adapt_ncwc_objective(objective_func, num_x, num_y):
 
 
 def _adapt_ncwc_metrics(metrics_func, num_x, num_y):
+    """Adapt bilevel metrics to `optimize_NCWC`'s `(min_block, max_block)` API."""
     if metrics_func is None:
         return None
     if not callable(metrics_func):
@@ -51,10 +55,12 @@ def _adapt_ncwc_metrics(metrics_func, num_x, num_y):
 
 
 def _positive_part(v):
+    """Elementwise positive part, matching `[g]_+` in the FOP/SMO papers."""
     return torch.clamp(v, min=0.0)
 
 
 def positive_part_norm_sq(v):
+    """Squared norm of `[v]_+`, used by quadratic penalty terms."""
     return torch.sum(torch.square(_positive_part(v)))
 
 
@@ -82,12 +88,19 @@ def optimize_bilevel_constrained_fop(
     progress_callback=None,
 ):
     """
-    Algorithm 4 for the constrained penalty reformulation.
+    Solve the constrained bilevel penalty subproblem from FOP Algorithm 4.
 
-    The minimization block is the concatenated tuple (x, y), and z is the
-    internal maximization block initialized from y.
+    FOP Algorithm 4 has one computational line: call Algorithm 6 with
+    rho = epsilon^{-1}, mu = epsilon^{-2}, epsilon_0 = epsilon^{5/2}, and
+    L_grad_h set to the Lipschitz bound used below.  This function builds the
+    smooth part of P_{rho,mu} from FOP equations (33)-(34), concatenates the
+    minimization block as `(x, y)`, initializes the maximization block `z` from
+    `y`, and delegates the line-1 minimax solve to `optimize_NCWC`.
 
-    h_alg4 computes the smooth part.
+    The nonsmooth terms f2(x), rho * ftilde2(y), and -rho * ftilde2(z) are
+    represented through the scaled proximal operators passed to `optimize_NCWC`.
+    The returned `z_eps` is the auxiliary maximizer from the paper; `params_x`
+    and `params_y` are updated in place to the returned `(x_epsilon,y_epsilon)`.
     """
     # if epsilon <= 0 or epsilon > 0.25:
     #     raise ValueError(f"Algorithm 4 requires epsilon in (0, 1/4], got {epsilon}")
@@ -103,13 +116,17 @@ def optimize_bilevel_constrained_fop(
     if not params_y:
         raise ValueError("params_y must contain at least one tensor")
 
+    # FOP Algorithm 4 input: rho = epsilon^{-1}, mu = epsilon^{-2},
+    # epsilon_0 = epsilon^{5/2}.
     rho = epsilon ** -1
     mu = epsilon ** -2
     epsilon_0 = epsilon ** (5 / 2)
 
+    # Algorithm 4 line 1 uses y_0 as Algorithm 6's initial maximization block.
     z_params = clone_vals(params_y, requires_grad=True)
 
     def h_alg4():
+        # FOP equations (33)-(34): smooth part of P_{rho,mu}(x,y,z).
         upper_term = upper_smooth(params_x, params_y)
         lower_y = lower_smooth(params_x, params_y)
         lower_z = lower_smooth(params_x, z_params)
@@ -132,8 +149,7 @@ def optimize_bilevel_constrained_fop(
     ncwc_objective = _adapt_ncwc_objective(objective_func, len(params_x), len(params_y))
     ncwc_metrics = _adapt_ncwc_metrics(metrics_func, len(params_x), len(params_y))
 
-
-    # TODO: if lip_h is None, use default value which is to be tuned
+    # FOP Algorithm 4 line 1: L_grad_h for the Algorithm 6 call.
     lip_h = (
         L_grad_f1
         + 2 * rho * L_grad_ftilde1
@@ -168,7 +184,7 @@ def optimize_bilevel_constrained_fop(
     }
 
 
-def optimize_bilevel_contrained_fop_practical(
+def optimize_bilevel_constrained_fop_practical(
     params_x,
     params_y,
     upper_smooth,
@@ -200,8 +216,7 @@ def optimize_bilevel_contrained_fop_practical(
     outer_desc=None,
 ):
     """
-    Practical outer-loop wrapper for FOP that warm-starts each stage and
-    repeatedly calls the constrained FOP subproblem solver.
+    Practical staged variant around the FOP Algorithm 4 subproblem.
     """
     if base_rho <= 0:
         raise ValueError(f"Invalid base_rho: {base_rho}")
@@ -245,7 +260,8 @@ def optimize_bilevel_contrained_fop_practical(
         unit="outer iter",
         disable=outer_desc is None,
     ):
-        # TODO: following original paper, we should use k-1, but it contradicts epsilon constraint in pseudocode
+        # Dynamic schedule for the practical variant; this is outside the
+        # literal FOP Algorithm 4 pseudocode.
         rho_k = base_rho ** (k - 1)
         mu_k = rho_k ** 2
         epsilon_k = 1.0 / rho_k
@@ -257,11 +273,13 @@ def optimize_bilevel_contrained_fop_practical(
             )
 
         def smooth_lower_penalty(z_vars):
+            # Warm-start analogue of FOP Remark 4(i), replacing ftilde by the
+            # quadratic-penalty lower objective P_tilde_mu.
             constraint_z = lower_constraints(params_x, z_vars)
             penalty = mu_k * positive_part_norm_sq(constraint_z)
             return lower_smooth(params_x, z_vars) + penalty
 
-        # TODO: if L_hat_k is None, use provided initial value * base_rho**k
+        # Lipschitz estimate for the warm-start lower penalty gradient.
         L_hat_k = L_grad_ftilde1 + 2.0 * mu_k * (L_gtilde ** 2 + gtilde_hi * L_grad_gtilde)
 
         y_init, warm_start_stats = agd_convex(
@@ -374,11 +392,21 @@ def optimize_bilevel_constrained_smo(
     progress_callback=None,
 ):
     """
-    Algorithm 1 for the constrained bilevel reformulation in the sigma = 0 case.
+    Run the SMO paper's sequential minimax outer loop for the sigma = 0 case.
 
-    The solver owns the full SMO outer loop. It warm-starts each lower subproblem
-    with Algorithm A.1 and solves each minimax stage via the existing B.2-style
-    NCWC wrapper.
+    This function implements SMO Algorithm 1 for constrained bilevel problems
+    with a merely convex lower objective.  The main paper-line mapping is:
+
+    - line 1: iterate over k with eta_k = eta_0 * tau^k;
+    - line 2: call Algorithm A.1 through `agd_convex` to warm-start y_init for
+      the modified augmented lower problem in equation (9);
+    - line 3: call Algorithm B.2 through `optimize_NCWC` to solve the minimax
+      subproblem in equation (12);
+    - line 4: update lambda_{k+1} = [lambda_k + pi_k g(x_{k+1},z_{k+1})]_+;
+    - line 5: stop when eta_k <= epsilon.
+
+    In this implementation `mu_k` denotes the paper's constraint penalty
+    `pi_k`; `rho_k` keeps the paper's notation.
     """
     if epsilon <= 0:
         raise ValueError(f"Invalid epsilon: {epsilon}")
@@ -448,21 +476,26 @@ def optimize_bilevel_constrained_smo(
     ncwc_objective = _adapt_ncwc_objective(objective_func, len(params_x), len(params_y))
     ncwc_metrics = _adapt_ncwc_metrics(metrics_func, len(params_x), len(params_y))
     while True:
+        # SMO Algorithm 1 line 1: eta_k is named epsilon_k in this code.
+        # The paper's pi_k is named mu_k here.
         rho_k = epsilon_k ** -1
         mu_k = epsilon_k ** -3
         lambda_norm = float(torch.linalg.vector_norm(lambda_k).item())
 
         def smooth_lower_aug(z_vars):
+            # SMO equation (9), used by Algorithm 1 line 2.
             constraint_z = lower_constraints(params_x, z_vars)
             penalty = positive_part_norm_sq(lambda_k + mu_k * constraint_z) / (2.0 * rho_k * mu_k)
             return lower_smooth(params_x, z_vars) + penalty
 
-        # TODO: if L_hat_k is None, use provided initial value * 1/(tau**{2k})
+        # SMO equation (11): smoothness bound for the line-2 warm start.
         L_hat_k = (
             L_grad_ftilde1
             + (mu_k * (L_gtilde ** 2 + gtilde_hi * L_grad_gtilde) + lambda_norm * L_grad_gtilde) / rho_k
         )
 
+        # SMO Algorithm 1 line 2: Algorithm A.1 for the sigma = 0 lower
+        # warm-start problem.
         y_init, warm_start_stats = agd_convex(
             clone_vals(params_y),
             smooth_lower_aug,
@@ -479,7 +512,8 @@ def optimize_bilevel_constrained_smo(
         z_params = clone_vals(z_state, requires_grad=True)
 
         def h_smo():
-            # Eq (8)
+            # SMO equation (8): smooth part of S(x, y, z, lambda_k; rho_k, pi_k)
+            # for the Algorithm 1 line-3 minimax subproblem.
             upper_term = upper_smooth(params_x, params_y)
             lower_y = lower_smooth(params_x, params_y)
             lower_z = lower_smooth(params_x, z_params)
@@ -491,7 +525,7 @@ def optimize_bilevel_constrained_smo(
 
         prox_hat = prox_x_funcs + [_scale_prox_spec(p, rho_k) for p in prox_y_funcs]
         prox_z = [_scale_prox_spec(p, rho_k) for p in prox_y_funcs]
-        # Eq (11)
+        # SMO equation (13): smoothness bound for Algorithm 1 line 3.
         L_k = (
             L_grad_f1
             + 2.0 * rho_k * L_grad_ftilde1
@@ -500,6 +534,7 @@ def optimize_bilevel_constrained_smo(
         )
         subproblem_epsilon_0 = epsilon_k / (2.0 * math.sqrt(mu_k))
 
+        # SMO Algorithm 1 line 3: Algorithm B.2, implemented by optimize_NCWC.
         subproblem_stats = optimize_NCWC(
             params_x + params_y,
             z_params,
@@ -520,6 +555,7 @@ def optimize_bilevel_constrained_smo(
 
         z_state = clone_vals(z_params)
         with torch.no_grad():
+            # SMO Algorithm 1 line 4.
             lambda_next = _positive_part(lambda_k + mu_k * lower_constraints(params_x, z_state)).detach()
         next_lambda_norm = float(torch.linalg.vector_norm(lambda_next).item())
 
@@ -550,6 +586,7 @@ def optimize_bilevel_constrained_smo(
 
         num_outer_iters += 1
         lambda_k = lambda_next
+        # SMO Algorithm 1 line 5.
         if epsilon_k <= epsilon:
             break
         epsilon_k *= tau
@@ -593,11 +630,17 @@ def optimize_bilevel_constrained_minimax(
         warm_start_epsilon=None,
 ):
     """
-    Our proposed method for the constrained penalty reformulation.
+    Proposed single-minimax method for the constrained penalty reformulation.
 
-    Using the Lagrangian formulation of the lower level problem, we solve only one instance of NCWC problem.
-    When warm_start_lower is enabled, initialize the lower primal-dual block
-    with AGD on a smooth quadratic-penalty lower subproblem.
+    This method is not a numbered algorithm from either the FOP or SMO paper, so
+    the implementation below intentionally avoids paper-line annotations.  It
+    converts the constrained lower-level problem to a bounded Lagrangian
+    minimax formulation and solves one NCWC problem over the primal-dual block
+    `(x, y1, y2)` against the copied maximization block `(z1, z2)`.
+
+    When `warm_start_lower` is enabled, the lower primal-dual block is
+    initialized with AGD on a smooth quadratic-penalty lower subproblem before
+    the single NCWC solve.
     """
 
     if epsilon <= 0:
@@ -632,7 +675,6 @@ def optimize_bilevel_constrained_minimax(
     if len(prox_y1_funcs) != len(params_y1):
         raise ValueError(f"Expected {len(params_y1)} proximal operators for y, got {len(prox_y1_funcs)}")
 
-    # Note we are transforming the lower level problem into unconstrained minimax, so we use settings in Algorithm 2.
     rho = epsilon ** -1
     epsilon_0 = epsilon ** (3 / 2)
 

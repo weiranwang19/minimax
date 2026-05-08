@@ -15,7 +15,7 @@ import torch
 from bilevel_solvers import (
     optimize_bilevel_constrained_minimax,
     optimize_bilevel_constrained_smo,
-    optimize_bilevel_contrained_fop_practical,
+    optimize_bilevel_constrained_fop_practical,
 )
 from svm.artifacts import save_artifacts
 from svm.data import DEFAULT_DATASETS, prepare_dataset_split, set_seed
@@ -628,7 +628,7 @@ def run_single_instance_fop(dataset_name, split_idx):
 
     c_tensor = c0.clone().requires_grad_(True)
     y_tensor = y0.clone().requires_grad_(True)
-    solver_result = optimize_bilevel_contrained_fop_practical(
+    solver_result = optimize_bilevel_constrained_fop_practical(
         [c_tensor],
         [y_tensor],
         problem.upper_smooth,

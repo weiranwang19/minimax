@@ -8,8 +8,21 @@ from utils import clone_vals, zero_vals, scale_vals, add_vals, blend_vals, assig
 
 class Minimax_SCSC(Optimizer):
     """
-    Algorithm 5 of FOP for strongly-convex-strongly-concave minimax problems.
-    Algorithm B.1 of SMO, inner solver reused by the higher-level wrappers.
+    Deterministic strongly-convex-strongly-concave minimax inner solver.
+
+    FOP Algorithm 5 and SMO Algorithm B.1.
+    
+    Both algorithms solve a regularized subproblem
+        min_x max_y h_bar(x, y) + p(x) - q(y),
+
+    where h_bar is sigma_x-strongly convex in x, sigma_y-strongly concave in y,
+    and smooth.  `prox_x` and `prox_y` evaluate the proximal operators of p and
+    q, respectively.  `run()` returns the paper's line-25 approximate stationary
+    output once the residual is at most `tau`, or the last iterate after
+    `max_iter` outer iterations.
+
+    The code comments inside `run()` use FOP Algorithm 5 line numbers; the same
+    line numbers apply to SMO Algorithm B.1.
     """
 
     def __init__(self, params_x, params_y, h_bar, sigma_x, sigma_y, lip, prox_x, prox_y, tau, lr=1, max_iter=1000, verbose=False, log_every=1):
@@ -50,28 +63,35 @@ class Minimax_SCSC(Optimizer):
             print(msg, flush=True)
 
     def get_x(self):
+        """Return the minimization block used by Algorithm 5/B.1 as x."""
         return self.param_groups[0]["params"]
 
     def get_y(self):
+        """Return the maximization block used by Algorithm 5/B.1 as y."""
         return self.param_groups[1]["params"]
 
     @torch.no_grad()
     def get_x_grad(self):
+        """Return gradients for the minimization block after backpropagation."""
         return [p.grad for p in self.get_x()]
 
     @torch.no_grad()
     def get_y_grad(self):
+        """Return gradients for the maximization block after backpropagation."""
         return [p.grad for p in self.get_y()]
 
     @torch.no_grad()
     def assign_x(self, val):
+        """Overwrite x parameters with a detached candidate iterate."""
         assign_vals(self.param_groups[0]["params"], val)
 
     @torch.no_grad()
     def assign_y(self, val):
+        """Overwrite y parameters with a detached candidate iterate."""
         assign_vals(self.param_groups[1]["params"], val)
 
     def compute_h_bar_gradient(self, x_val, y_val):
+        """Evaluate gradients of the smooth SCSC objective h_bar at `(x, y)`."""
         self.assign_x(x_val)
         self.assign_y(y_val)
 
@@ -83,6 +103,14 @@ class Minimax_SCSC(Optimizer):
         return x_grad, y_grad
 
     def compute_a_k(self, x_val, y_val, z_g_k, y_g_k, return_h_hat_grad=False):
+        """
+        Compute the paper's a_x^k and a_y^k maps for Algorithm 5/B.1.
+
+        The formulas just before FOP Algorithm 5 / SMO Algorithm B.1 define
+        h_hat = h_bar - sigma_x ||x||^2 / 2 + sigma_y ||y||^2 / 2, then use
+        a_x^k and a_y^k throughout lines 4-15.  When `return_h_hat_grad` is
+        true, this helper returns only grad_x h_hat and grad_y h_hat for line 19.
+        """
         x_grad, y_grad = self.compute_h_bar_gradient(x_val, y_val)
         x_grad_hat = add_vals(x_grad, scale_vals(x_val, -self.sigma_x))
         y_grad_hat = add_vals(y_grad, scale_vals(y_val, self.sigma_y))
@@ -101,6 +129,14 @@ class Minimax_SCSC(Optimizer):
         return a_x_k, a_y_k
 
     def run(self):
+        """
+        Run FOP Algorithm 5 / SMO Algorithm B.1 until the line-25 residual is small.
+
+        Returns a compact stats dictionary and leaves the optimizer parameters at
+        the final hat iterate `(x_hat, y_hat)`, matching the algorithm output.
+        """
+        # Algorithm 5/B.1 input initialization:
+        #   z_0 = z_f^0 = -sigma_x x_0, y_0 = y_f^0 = current y.
         z_k = z_f_k = scale_vals(clone_vals(self.get_x()), -self.sigma_x)
         y_k = y_f_k = clone_vals(self.get_y())
 
@@ -110,6 +146,7 @@ class Minimax_SCSC(Optimizer):
         terminated = False
 
         for k in range(self.max_iter):
+            # Lines 2-3: extrapolate the aggregate point and recover x_{k,-1}.
             z_g_k = add_vals(
                 scale_vals(z_k, self.alpha_bar),
                 scale_vals(z_f_k, 1 - self.alpha_bar),
@@ -122,6 +159,8 @@ class Minimax_SCSC(Optimizer):
             x_k_m1 = scale_vals(z_g_k, -1 / self.sigma_x)
             y_k_m1 = clone_vals(y_g_k)
 
+            # Lines 4-7: one proximal step gives (x_{k,0}, y_{k,0}) and the
+            # forward-backward residual vectors b_x^{k,0}, b_y^{k,0}.
             a_x_k, a_y_k = self.compute_a_k(x_k_m1, y_k_m1, z_g_k, y_g_k)
             x_tmp = add_vals(x_k_m1, scale_vals(a_x_k, -self.zeta * self.gamma_x))
             y_tmp = add_vals(y_k_m1, scale_vals(a_y_k, -self.zeta * self.gamma_y))
@@ -138,6 +177,8 @@ class Minimax_SCSC(Optimizer):
 
             t = 0
             while True:
+                # Lines 8-9: check the inner residual inequality.  The paper has
+                # beta_t = 2 / (t + 3); `lr` allows experiments to damp or scale it.
                 beta_t = self.lr * 2 / (t + 3)
 
                 a_x_t, a_y_t = self.compute_a_k(x_k_t, y_k_t, z_g_k, y_g_k)
@@ -155,6 +196,7 @@ class Minimax_SCSC(Optimizer):
                 if lhs <= rhs + 1e-8 or t > 10000:
                     break
 
+                # Lines 10-15: half-step, prox step, and residual-vector update.
                 x_diff = add_vals(x_k_0, scale_vals(x_k_t, -1))
                 y_diff = add_vals(y_k_0, scale_vals(y_k_t, -1))
                 x_k_t_half = add_vals(x_k_t, scale_vals(x_diff, beta_t))
@@ -196,6 +238,8 @@ class Minimax_SCSC(Optimizer):
                         f"Minimax_SCSC inner k={k} t={t} lhs={float(lhs.item()):.3e} rhs={float(rhs.item()):.3e}"
                     )
 
+            # Lines 18-22: accept the inner solution and update the aggregate
+            # z/y state used by the next outer iteration.
             x_f_kp1, y_f_kp1 = x_k_t, y_k_t
 
             x_grad_hat, y_grad_hat = self.compute_a_k(x_f_kp1, y_f_kp1, None, None, return_h_hat_grad=True)
@@ -214,6 +258,7 @@ class Minimax_SCSC(Optimizer):
 
             x_kp1 = scale_vals(z_kp1, -1 / self.sigma_x)
 
+            # Lines 23-25: compute the hat iterate and its stationarity residual.
             x_grad, y_grad = self.compute_h_bar_gradient(x_kp1, y_kp1)
             x_hat_kp1 = add_vals(x_kp1, scale_vals(x_grad, -self.zeta_hat))
             x_hat_kp1 = compute_prox(x_hat_kp1, self.prox_x, self.zeta_hat)
@@ -243,7 +288,7 @@ class Minimax_SCSC(Optimizer):
                 raise RuntimeError(f"Minimax_SCSC encountered non-finite stationarity delta at outer={k}")
             final_delta = float(delta.item())
             num_outer_iters = k + 1
-            num_inner_iters+= t
+            num_inner_iters += t
 
             # if self.verbose and (
             #     k % self.log_every == 0 or final_delta < self.tau or num_outer_iters == self.max_iter
@@ -270,6 +315,7 @@ class Minimax_SCSC(Optimizer):
 
 
 def _evaluate_objective(objective_func, params_x, params_y):
+    """Evaluate an optional monitoring objective without tracking gradients."""
     if objective_func is None:
         return None
     with torch.no_grad():
@@ -280,6 +326,7 @@ def _evaluate_objective(objective_func, params_x, params_y):
 
 
 def _evaluate_metrics(metrics_func, params_x, params_y):
+    """Evaluate optional monitoring metrics and normalize tensor values to floats."""
     if metrics_func is None:
         return None
     with torch.no_grad():
@@ -299,8 +346,7 @@ def _evaluate_metrics(metrics_func, params_x, params_y):
 
 class SAPD_SCSC(Optimizer):
     """
-    Algorithm 1 of SAPD+:
-        https://arxiv.org/pdf/2205.15084
+    implements Algorithm 1 of SAPD+ (https://arxiv.org/pdf/2205.15084).
     """
 
     def __init__(
@@ -340,29 +386,34 @@ class SAPD_SCSC(Optimizer):
         self.verbose = verbose
         self.log_every = log_every
 
-        self.sigma =  1 / lip
+        self.sigma = 1 / lip
         self.tau = 1 / lip_tau if lip_tau is not None else 1 / lip
         self.theta = theta
-        theoretical_num_iter = 33 * max(4/(mu_x * self.tau), 8 / (mu_y * self.sigma))
-        theoretical_num_iter = int( max(theoretical_num_iter, 1) )
-        self.max_iter = int( min(max_iter, theoretical_num_iter) )
+        theoretical_num_iter = 33 * max(4 / (mu_x * self.tau), 8 / (mu_y * self.sigma))
+        theoretical_num_iter = int(max(theoretical_num_iter, 1))
+        self.max_iter = int(min(max_iter, theoretical_num_iter))
         print(f"theoretical_num_iter={theoretical_num_iter}, max_iter={self.max_iter}, lip={self.lip}")
 
     def get_x(self):
+        """Return the SAPD minimization block."""
         return self.param_groups[0]["params"]
 
     def get_y(self):
+        """Return the SAPD maximization block."""
         return self.param_groups[1]["params"]
 
     @torch.no_grad()
     def assign_x(self, val):
+        """Overwrite the SAPD minimization block with a candidate iterate."""
         assign_vals(self.param_groups[0]["params"], val)
 
     @torch.no_grad()
     def assign_y(self, val):
+        """Overwrite the SAPD maximization block with a candidate iterate."""
         assign_vals(self.param_groups[1]["params"], val)
 
     def compute_h_and_gradient(self, x_val, y_val, var='x'):
+        """Evaluate h_bar and return the gradient with respect to `var`."""
         self.assign_x(x_val)
         self.assign_y(y_val)
 
@@ -374,6 +425,7 @@ class SAPD_SCSC(Optimizer):
         return loss, [p.detach() for p in output_grad]
 
     def run(self):
+        """Run the SAPD+ updates and leave parameters at the averaged iterate."""
         x_k = clone_vals(self.get_x())
         y_k = clone_vals(self.get_y())
         q_k = zero_vals(self.get_y())
@@ -384,20 +436,20 @@ class SAPD_SCSC(Optimizer):
         terminated = False
 
         for k in range(self.max_iter):
-            # line 5
+            # SAPD+ Algorithm 1, line 5.
             _, grad_y = self.compute_h_and_gradient(x_k, y_k, var='y')
             s_k = add_vals(grad_y, scale_vals(q_k, self.theta))
 
-            # line 6
+            # SAPD+ Algorithm 1, line 6.
             y_kp1 = add_vals(y_k, scale_vals(s_k, self.sigma))
             y_kp1 = compute_prox(y_kp1, self.prox_y, self.sigma)
 
-            # line 7
+            # SAPD+ Algorithm 1, line 7.
             _, grad_x = self.compute_h_and_gradient(x_k, y_kp1, var='x')
             x_kp1 = add_vals(x_k, scale_vals(grad_x, - self.tau))
             x_kp1 = compute_prox(x_kp1, self.prox_x, self.tau)
 
-            # line 8
+            # SAPD+ Algorithm 1, line 8.
             _, grad_y_kp1 = self.compute_h_and_gradient(x_kp1, y_kp1, var='y')
             q_k = add_vals(grad_y_kp1, scale_vals(grad_y, -1))
             final_delta = float(
@@ -448,8 +500,20 @@ def optimize_NCWC(
     theta=1.0,
 ):
     """
-    Algorithm 6 of FOP for non-convex-weakly-concave minimax problems.
-    Algorithm B.2 of SMO outer wrapper for the sigma_y = 0 case: it repeatedly regularizes the minimax problem and calls the strongly-convex-strongly-concave inner solver above.
+    Solve a nonconvex-weakly-concave minimax problem by repeated SCSC solves.
+
+    This is the outer first-order wrapper in FOP Algorithm 6 and the same
+    regularization pattern used by SMO Algorithm B.2 for Problem (B.1) when the
+    maximization side is only weakly concave.  Each outer iteration constructs
+    the paper's regularized subproblem h_k, calls `Minimax_SCSC` for the
+    strongly-convex-strongly-concave solve, and stops when the paper's
+    line-3 displacement test is satisfied.
+
+    Parameters are grouped as `params_x` for the minimizing block and `params_y`
+    for the maximizing block.  `h_func` supplies the smooth part h(x, y);
+    `prox_x` and `prox_y` supply the nonsmooth proximal operators.  The optional
+    `sub_routine="stochastic"` path is an experimental replacement for the
+    deterministic paper inner solver.
     """
     if lip_h <= 0:
         raise ValueError(f"Invalid lip_h: {lip_h}")
@@ -505,6 +569,9 @@ def optimize_NCWC(
     for k in tqdm.trange(max_iter, desc="optimize_NCWC", unit="outer iter", disable=not verbose):
 
         def h_alg6():
+            # FOP Algorithm 6 line 2 / SMO Algorithm B.2 line 2:
+            # h_k(x, y) = h(x, y) + L_h ||x - x_k||^2
+            #             - epsilon ||y - y_0||^2 / (4 D_y).
             f = h_func()
             s_y = 0
             for p, p0 in zip(params_y, y_0):
@@ -514,10 +581,14 @@ def optimize_NCWC(
                 s_x += torch.sum(torch.square(p - p0))
             return f - (epsilon * s_y) / (4 * D_y) + lip_h * s_x
 
+        # FOP Algorithm 6 input uses epsilon_k = epsilon_0 / (k + 1).  The same
+        # quantity is eta_hat_k in SMO Algorithm B.2.
         epsilon_k = epsilon_0 / (k + 1)
         sigma_y = epsilon / (2 * D_y)
         lip_k = 3 * lip_h + epsilon / (2 * D_y)
         if sub_routine == 'deterministic':
+            # FOP Algorithm 6 line 2 / SMO Algorithm B.2 line 2: call the SCSC
+            # inner solver, i.e. FOP Algorithm 5 / SMO Algorithm B.1.
             solver = Minimax_SCSC(
                 params_x,
                 params_y,
@@ -534,6 +605,7 @@ def optimize_NCWC(
                 log_every=log_every,
             )
         elif sub_routine == 'stochastic':
+            # Experimental substitute for the paper's deterministic line-2 call.
             solver = SAPD_SCSC(
                 params_x,
                 params_y,
@@ -558,6 +630,7 @@ def optimize_NCWC(
         final_diff = float(diff.item())
         num_outer_iters = k + 1
         num_inner_iters += solver_stats["num_inner_iters"]
+        # FOP Algorithm 6 line 3 / SMO Algorithm B.2 line 3.
         ncwc_terminated = diff <= epsilon / (4 * lip_h)
 
         if progress_callback is not None:
@@ -591,8 +664,6 @@ def optimize_NCWC(
             break
 
         x_k = x_kp1
-
-    # TODO: add metrics here and stop early.
 
     return {
         "num_outer_iters": num_outer_iters,
