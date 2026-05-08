@@ -1,2 +1,1 @@
 # minimax
-# minimax
