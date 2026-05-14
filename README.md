@@ -6,4 +6,4 @@ Implementation of our paper here: https://arxiv.org/abs/2605.08006
 
 We used the following repository for DRO experiments. Related used datasets can be found there.
 
-- [DRO](https://github.com/kohpangwei/group_DRO)
+- [Group DRO](https://github.com/kohpangwei/group_DRO)
