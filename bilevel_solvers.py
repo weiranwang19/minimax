@@ -67,6 +67,15 @@ def _validate_lip_override(lip_override):
     return lip_override
 
 
+def _validate_lip_scale(lip_scale):
+    if lip_scale is None:
+        return None
+    lip_scale = float(lip_scale)
+    if not math.isfinite(lip_scale) or lip_scale <= 0:
+        raise ValueError(f"Invalid lip_scale: {lip_scale}")
+    return lip_scale
+
+
 def optimize_bilevel_constrained_fop(
     params_x,
     params_y,
@@ -89,13 +98,16 @@ def optimize_bilevel_constrained_fop(
     objective_func=None,
     metrics_func=None,
     progress_callback=None,
-    lip_override=None,
+    lip_scale=None,
 ):
     """
     Algorithm 4 for the constrained penalty reformulation.
 
     The minimization block is the concatenated tuple (x, y), and z is the
     internal maximization block initialized from y.
+    When provided, lip_scale sets the NCWC coefficient to
+    lip_scale * rho * mu; it does not change the analytic coefficient reported
+    as computed_lip_h.
 
     h_alg4 computes the smooth part.
     """
@@ -103,7 +115,7 @@ def optimize_bilevel_constrained_fop(
     #     raise ValueError(f"Algorithm 4 requires epsilon in (0, 1/4], got {epsilon}")
     if D_y <= 0:
         raise ValueError(f"Invalid D_y: {D_y}")
-    lip_override = _validate_lip_override(lip_override)
+    lip_scale = _validate_lip_scale(lip_scale)
     if log_every <= 0:
         raise ValueError(f"Invalid log_every: {log_every}")
 
@@ -149,6 +161,7 @@ def optimize_bilevel_constrained_fop(
         + 2 * rho * L_grad_ftilde1
         + 4 * rho * mu * (gtilde_hi * L_grad_gtilde + L_gtilde ** 2)
     )
+    lip_override = None if lip_scale is None else lip_scale * rho * mu
     lip_h = computed_lip_h if lip_override is None else lip_override
 
     solver_stats = optimize_NCWC(
@@ -177,6 +190,7 @@ def optimize_bilevel_constrained_fop(
         "epsilon_0": epsilon_0,
         "lip_h": lip_h,
         "computed_lip_h": computed_lip_h,
+        "lip_scale": lip_scale,
         "lip_override": lip_override,
         "solver_stats": solver_stats,
     }
@@ -212,11 +226,12 @@ def optimize_bilevel_contrained_fop_practical(
     verbose=False,
     log_every=1,
     outer_desc=None,
-    lip_override=None,
+    lip_scale=None,
 ):
     """
     Practical outer-loop wrapper for FOP that warm-starts each stage and
-    repeatedly calls the constrained FOP subproblem solver.
+    repeatedly calls the constrained FOP subproblem solver with one shared
+    lip_scale across all stages.
     """
     if base_rho <= 0:
         raise ValueError(f"Invalid base_rho: {base_rho}")
@@ -224,7 +239,7 @@ def optimize_bilevel_contrained_fop_practical(
         raise ValueError(f"Invalid final_epsilon: {final_epsilon}")
     if D_y <= 0:
         raise ValueError(f"Invalid D_y: {D_y}")
-    lip_override = _validate_lip_override(lip_override)
+    lip_scale = _validate_lip_scale(lip_scale)
     if warm_start_max_iter is not None and warm_start_max_iter < 0:
         raise ValueError(f"Invalid warm_start_max_iter: {warm_start_max_iter}")
     if subproblem_max_iter <= 0:
@@ -315,7 +330,7 @@ def optimize_bilevel_contrained_fop_practical(
             objective_func=objective_func,
             metrics_func=metrics_func,
             progress_callback=progress_callback,
-            lip_override=lip_override,
+            lip_scale=lip_scale,
         )
         assign_vals(params_x, x_stage)
         assign_vals(params_y, y_stage)
@@ -333,6 +348,7 @@ def optimize_bilevel_contrained_fop_practical(
             "warm_start_capped": warm_start_stats["capped"],
             "lip_h": last_solver_result["lip_h"],
             "computed_lip_h": last_solver_result["computed_lip_h"],
+            "lip_scale": last_solver_result["lip_scale"],
             "lip_override": last_solver_result["lip_override"],
             "subproblem_stats": last_solver_result["solver_stats"],
             "metrics": metrics,
@@ -362,6 +378,10 @@ def optimize_bilevel_contrained_fop_practical(
         "history": history,
         "final_metrics": final_metrics,
         "last_subproblem": last_solver_result,
+        "lip_h": last_solver_result["lip_h"],
+        "computed_lip_h": last_solver_result["computed_lip_h"],
+        "lip_scale": lip_scale,
+        "lip_override": last_solver_result["lip_override"],
     }
 
 
@@ -392,14 +412,15 @@ def optimize_bilevel_constrained_smo(
     objective_func=None,
     metrics_func=None,
     progress_callback=None,
-    lip_override=None,
+    lip_scale=None,
 ):
     """
     Algorithm 1 for the constrained bilevel reformulation in the sigma = 0 case.
 
     The solver owns the full SMO outer loop. It warm-starts each lower subproblem
     with Algorithm A.1 and solves each minimax stage via the existing B.2-style
-    NCWC wrapper.
+    NCWC wrapper. When provided, lip_scale sets each stage's NCWC coefficient
+    to lip_scale * mu_k.
     """
     if epsilon <= 0:
         raise ValueError(f"Invalid epsilon: {epsilon}")
@@ -409,7 +430,7 @@ def optimize_bilevel_constrained_smo(
         raise ValueError(f"Invalid epsilon0: {epsilon_0}")
     if D_y <= 0:
         raise ValueError(f"Invalid D_y: {D_y}")
-    lip_override = _validate_lip_override(lip_override)
+    lip_scale = _validate_lip_scale(lip_scale)
     if subproblem_max_iter <= 0:
         raise ValueError(f"Invalid subproblem_max_iter: {subproblem_max_iter}")
     if warm_start_max_iter is not None and warm_start_max_iter < 0:
@@ -520,6 +541,7 @@ def optimize_bilevel_constrained_smo(
             + 2.0 * mu_k * (L_gtilde ** 2 + gtilde_hi * L_grad_gtilde)
             + 2.0 * lambda_norm * L_grad_gtilde
         )
+        lip_override = None if lip_scale is None else lip_scale * mu_k
         lip_h = computed_lip_h if lip_override is None else lip_override
         subproblem_epsilon_0 = epsilon_k / (2.0 * math.sqrt(mu_k))
 
@@ -557,6 +579,7 @@ def optimize_bilevel_constrained_smo(
             "warm_start_capped": warm_start_stats["capped"],
             "lip_h": lip_h,
             "computed_lip_h": computed_lip_h,
+            "lip_scale": lip_scale,
             "lip_override": lip_override,
             "subproblem_stats": subproblem_stats,
             "next_lambda_norm": next_lambda_norm,
@@ -586,6 +609,10 @@ def optimize_bilevel_constrained_smo(
         "num_outer_iters": num_outer_iters,
         "terminated": True,
         "history": history,
+        "lip_h": history[-1]["lip_h"],
+        "computed_lip_h": history[-1]["computed_lip_h"],
+        "lip_scale": lip_scale,
+        "lip_override": history[-1]["lip_override"],
     }
 
 
