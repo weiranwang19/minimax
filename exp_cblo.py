@@ -20,23 +20,25 @@ torch.set_default_dtype(torch.float64)
 
 # Section 4.2 / Table 2 experiment controls. `PROBLEM_SIZES` is the actual grid of (n, m, l) values; the rest are algorithmic parameters that can be tuned for better performance.
 # PROBLEM_SIZES = [(100 * k, 100 * k, 5 * k) for k in range(1,4)]
-PROBLEM_SIZES = [(500, 500, 25)]
+PROBLEM_SIZES = [(100, 100, 5)]
 # Zero-based instance indices. Edit this list to rerun only failed/interrupted instances
 # while keeping the exact same sampled instance for each (n, m, l) across methods.
-# NUM_INSTANCES = list(range(5))
-NUM_INSTANCES = [0,2,3,4,6,7,8,9]
-SOLVER_METHOD = "gcmo"
+NUM_INSTANCES = list(range(5))
+# NUM_INSTANCES = [0,2,3,4,6,7,8,9]
+SOLVER_METHOD = "fop"
 # FOP
 BASE_RHO = 5.0
 FINAL_EPS = 1e-2
 MAX_OUTER_ITERS = 200
 ALG4_MAX_ITERS = 200
+FOP_LIP_OVERRIDE = None
 
 # SMO
 SMO_EPS = 1e-2
 SMO_EPSILON_0 = 1.0
 SMO_TAU = 0.8
 SMO_SUBPROBLEM_MAX_ITERS = 200
+SMO_LIP_OVERRIDE = 0.1
 
 # GCMO
 GCMO_EPS = 1e-2
@@ -69,6 +71,8 @@ FOP_STAGE_METRICS = (
     "fop/stage/rho",
     "fop/stage/mu",
     "fop/stage/epsilon",
+    "fop/stage/lip_h",
+    "fop/stage/computed_lip_h",
     "fop/warm_start/num_iters",
     "fop/warm_start/target_num_iters",
     "fop/warm_start/capped",
@@ -85,6 +89,8 @@ SMO_STAGE_METRICS = (
     "smo/stage/rho",
     "smo/stage/mu",
     "smo/stage/lambda_norm",
+    "smo/stage/lip_h",
+    "smo/stage/computed_lip_h",
     "smo/warm_start/num_iters",
     "smo/warm_start/target_num_iters",
     "smo/warm_start/capped",
@@ -195,16 +201,23 @@ def init_instance_run(problem_size, instance_idx, instance_position, num_instanc
         "lower_gap_tol": LOWER_GAP_TOL,
         "max_outer_iters": MAX_OUTER_ITERS,
         "alg4_max_iters": ALG4_MAX_ITERS,
+        "fop_lip_override": FOP_LIP_OVERRIDE,
         "smo_eps": SMO_EPS,
         "smo_epsilon_0": SMO_EPSILON_0,
         "smo_tau": SMO_TAU,
         "smo_subproblem_max_iters": SMO_SUBPROBLEM_MAX_ITERS,
+        "smo_lip_override": SMO_LIP_OVERRIDE,
         "gcmo_eps": GCMO_EPS,
         "gcmo_max_iters": GCMO_MAX_ITERS,
         "gcmo_lagrange_bound": GCMO_LAGRANGE_BOUND,
         "gcmo_lip_override": GCMO_LIP_OVERRIDE,
     }
-    lip_label = f"lip{GCMO_LIP_OVERRIDE:g}" if GCMO_LIP_OVERRIDE is not None else "lipauto"
+    selected_lip_override = {
+        "fop": FOP_LIP_OVERRIDE,
+        "smo": SMO_LIP_OVERRIDE,
+        "gcmo": GCMO_LIP_OVERRIDE,
+    }.get(SOLVER_METHOD)
+    lip_label = f"lip{selected_lip_override:g}" if selected_lip_override is not None else "lipauto"
     run = wandb.init(
         project=WANDB_PROJECT,
         entity=WANDB_ENTITY,
@@ -558,6 +571,8 @@ def run_single_instance_fop(instance_idx, problem_size, instance_position, num_i
                 "fop/stage/rho": payload["rho_k"],
                 "fop/stage/mu": payload["mu_k"],
                 "fop/stage/epsilon": payload["epsilon_k"],
+                "fop/stage/lip_h": payload["lip_h"],
+                "fop/stage/computed_lip_h": payload["computed_lip_h"],
                 "fop/warm_start/num_iters": payload["warm_start_iters"],
                 "fop/warm_start/target_num_iters": payload["warm_start_target_iters"],
                 "fop/warm_start/capped": float(payload["warm_start_capped"]),
@@ -613,6 +628,7 @@ def run_single_instance_fop(instance_idx, problem_size, instance_position, num_i
             verbose=VERBOSE,
             log_every=SOLVER_LOG_EVERY,
             outer_desc=f"Instance {instance_label}",
+            lip_override=FOP_LIP_OVERRIDE,
         )
 
         final_metrics = solver_result["final_metrics"]
@@ -697,6 +713,8 @@ def run_single_instance_smo(instance_idx, problem_size, instance_position, num_i
             "rho": payload["rho_k"],
             "mu": payload["mu_k"],
             "lambda_norm": payload["lambda_norm"],
+            "lip_h": payload["lip_h"],
+            "computed_lip_h": payload["computed_lip_h"],
             "y_feas": y_metrics["feas"],
             "y_lower_gap": y_metrics["lower_gap"], # \tilde f(x,y) - \tilde f^*(x)
             "z_feas": z_metrics["feas"],
@@ -714,6 +732,8 @@ def run_single_instance_smo(instance_idx, problem_size, instance_position, num_i
             "smo/stage/rho": stage_diag["rho"],
             "smo/stage/mu": stage_diag["mu"],
             "smo/stage/lambda_norm": stage_diag["lambda_norm"],
+            "smo/stage/lip_h": stage_diag["lip_h"],
+            "smo/stage/computed_lip_h": stage_diag["computed_lip_h"],
             "smo/warm_start/num_iters": payload["warm_start_iters"],
             "smo/warm_start/target_num_iters": payload["warm_start_target_iters"],
             "smo/warm_start/capped": float(payload["warm_start_capped"]),
@@ -778,6 +798,7 @@ def run_single_instance_smo(instance_idx, problem_size, instance_position, num_i
             objective_func=upper_smooth,
             metrics_func=evaluate_ncwc_iterate,
             progress_callback=ncwc_progress_callback,
+            lip_override=SMO_LIP_OVERRIDE,
         )
 
         x_final = x_tensor.detach().clone()
