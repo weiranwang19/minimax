@@ -44,7 +44,9 @@ SMO_LIP_SCALE = 0.1
 GCMO_EPS = 1e-2
 GCMO_MAX_ITERS = 200
 GCMO_LAGRANGE_BOUND = 200
-GCMO_LIP_OVERRIDE = None
+GCMO_LIP_OVERRIDE = 6
+# Maximum AGD lower-level warm-start iterations. Set to 0 to disable AGD.
+GCMO_AGD_MAX_ITERS = 1000
 
 # Common
 FEAS_TOL = 1e-2
@@ -215,6 +217,7 @@ def init_instance_run(problem_size, instance_idx, instance_position, num_instanc
         "gcmo_max_iters": GCMO_MAX_ITERS,
         "gcmo_lagrange_bound": GCMO_LAGRANGE_BOUND,
         "gcmo_lip_override": GCMO_LIP_OVERRIDE,
+        "gcmo_agd_max_iters": GCMO_AGD_MAX_ITERS,
     }
     if SOLVER_METHOD in {"fop", "smo"}:
         selected_lip_scale = {
@@ -970,6 +973,9 @@ def run_single_instance_gcmo(instance_idx, problem_size, instance_position, num_
             metrics_func=evaluate_ncwc_iterate,
             progress_callback=ncwc_progress_callback,
             lip_override=GCMO_LIP_OVERRIDE,
+            warm_start_lower=GCMO_AGD_MAX_ITERS > 0,
+            warm_start_max_iter=GCMO_AGD_MAX_ITERS,
+            warm_start_D_y=compute_d_y(),
         )
 
         x_final = x_tensor.detach().clone()

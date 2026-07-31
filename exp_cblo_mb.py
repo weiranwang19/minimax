@@ -8,8 +8,8 @@ import exp_cblo
 
 # Keep these as explicit, editable lists of problem sizes and zero-based instance
 # indices. The defaults match the current experiment selection in exp_cblo.py.
-PROBLEM_SIZES = [(300,300,15)]
-NUM_INSTANCES = [0, 1, 3]
+PROBLEM_SIZES = [(500,500,25)]
+NUM_INSTANCES = [0, 2, 3]
 
 
 def solve_instance(problem_size, instance_idx):

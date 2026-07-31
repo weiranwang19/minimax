@@ -210,9 +210,9 @@ def set_seed(seed):
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Stochastic NCWC DRO experiment")
-    parser.add_argument("--dataset", choices=DATASET_DEFAULTS.keys(), default="waterbirds")
+    parser.add_argument("--dataset", choices=DATASET_DEFAULTS.keys(), default="celeba")
     parser.add_argument("--dataset_root", type=Path, default=None)
-    parser.add_argument("--ckpt_folder_name", default=None)
+    parser.add_argument("--ckpt_folder_name", default=None) # if None, no checkpoints will be saved. If a string, checkpoints will be saved to minimax-ckpts/<ckpt_folder_name>/
     parser.add_argument("--target_name", default=None)
     parser.add_argument("--confounder_name", default=None)
     parser.add_argument("--batch_size", type=int, default=128)
@@ -229,7 +229,7 @@ def parse_args():
     parser.add_argument("--eta_init", type=float, default=1.0)
     parser.add_argument("--eta_min", type=float, default=1e-6)
     # L2 coefficient used for R(x_1), R(y_1), and R(z_1) in the DRO objective.
-    parser.add_argument("--weight_decay", type=float, default=1.0)
+    parser.add_argument("--weight_decay", type=float, default=0.1)
     parser.add_argument("--solver_lip_h", type=float, default=1000.0)
     parser.add_argument("--solver_lip_tau", type=float, default=100.0)
     parser.add_argument("--solver_theta", type=float, default=0.1)
@@ -237,7 +237,7 @@ def parse_args():
     parser.add_argument("--solver_epsilon", type=float, default=1.0)
     parser.add_argument("--solver_epsilon_0", type=float, default=10.0)
     parser.add_argument("--solver_lr", type=float, default=1.0)
-    parser.add_argument("--solver_max_outer_iters", type=int, default=40)
+    parser.add_argument("--solver_max_outer_iters", type=int, default=100)
     parser.add_argument("--solver_inner_max_iters", type=int, default=1)
     parser.add_argument("--monitor_batches", type=int, default=1)
     parser.add_argument("--test_eval_every", type=int, default=1)
