@@ -30,7 +30,7 @@ def agd_convex(
     objective_func=None,
 ):
     """
-    Algorithm A.1 of SMO for the convex composite lower warm-start subproblem.
+    Algorithm A.1 (Published) or 2 (ArXiv) of SMO for the convex composite lower warm-start subproblem.
 
     The implementation uses the theorem-backed fixed iteration count from
     Lemma 7 instead of the paper's explicit lower-bound stopping certificate.
