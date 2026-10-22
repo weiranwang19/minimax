@@ -12,7 +12,7 @@ class Minimax_SCSC(Optimizer):
     Algorithm B.1 of SMO, inner solver reused by the higher-level wrappers.
     """
 
-    def __init__(self, params_x, params_y, h_bar, sigma_x, sigma_y, lip, prox_x, prox_y, tau, lr=1, max_iter=1000, verbose=False, log_every=1):
+    def __init__(self, params_x, params_y, h_bar, sigma_x, sigma_y, lip, prox_x, prox_y, tau, lr=1, max_iter=300000, verbose=False, log_every=1):
         if lr < 0.0:
             raise ValueError(f"Invalid learning rate: {lr}")
         if tau <= 0.0:
@@ -152,7 +152,7 @@ class Minimax_SCSC(Optimizer):
                         f"Minimax_SCSC encountered non-finite line-search values "
                         f"at outer={k}, inner={t}: lhs={float(lhs.item())}, rhs={float(rhs.item())}"
                     )
-                if lhs <= rhs + 1e-8 or t > 10000:
+                if lhs <= rhs:# or t > 10000:
                     break
 
                 x_diff = add_vals(x_k_0, scale_vals(x_k_t, -1))

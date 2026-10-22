@@ -7,7 +7,9 @@ minimax-ckpts
 svm/models/
 svm/results/
 results/
-tests/
+tests/*
+!tests/test_agd.py
+!tests/test_cblo_warm_starts.py
 svm/__pycache__/
 
 tea_debug.log

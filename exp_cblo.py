@@ -20,18 +20,20 @@ torch.set_default_dtype(torch.float64)
 
 # Section 4.2 / Table 2 experiment controls. `PROBLEM_SIZES` is the actual grid of (n, m, l) values; the rest are algorithmic parameters that can be tuned for better performance.
 # PROBLEM_SIZES = [(100 * k, 100 * k, 5 * k) for k in range(1,4)]
-PROBLEM_SIZES = [(200, 200, 10)]
+PROBLEM_SIZES = [(100, 100, 5)]
 # Zero-based instance indices. Edit this list to rerun only failed/interrupted instances
 # while keeping the exact same sampled instance for each (n, m, l) across methods.
 NUM_INSTANCES = list(range(5))
-# NUM_INSTANCES = [0,2,3,4,6,7,8,9]
+NUM_INSTANCES = [1]
 SOLVER_METHOD = "fop"
 # FOP
 BASE_RHO = 5.0
 FINAL_EPS = 1e-2
 MAX_OUTER_ITERS = 200
-ALG4_MAX_ITERS = 200
+ALG4_MAX_ITERS = 1000
 FOP_LIP_SCALE = 0.1
+# None runs AGD until certified; a nonnegative integer caps its updates.
+FOP_AGD_MAX_ITERS = None
 
 # SMO
 SMO_EPS = 1e-2
@@ -39,14 +41,15 @@ SMO_EPSILON_0 = 1.0
 SMO_TAU = 0.8
 SMO_SUBPROBLEM_MAX_ITERS = 200
 SMO_LIP_SCALE = 0.1
+SMO_AGD_MAX_ITERS = None
 
 # GCMO
 GCMO_EPS = 1e-2
 GCMO_MAX_ITERS = 200
 GCMO_LAGRANGE_BOUND = 200
 GCMO_LIP_OVERRIDE = 6
-# Maximum AGD lower-level warm-start iterations. Set to 0 to disable AGD.
-GCMO_AGD_MAX_ITERS = 1000
+# None runs until certified; 0 evaluates the seed without AGD updates.
+GCMO_AGD_MAX_ITERS = None
 
 # Common
 FEAS_TOL = 1e-2
@@ -63,6 +66,7 @@ NCWC_HISTORY_METRICS = (
     "ncwc/upper_obj",
     "ncwc/feas",
     "ncwc/lower_gap",
+    "ncwc/primal_dual_gap",
     "ncwc/call_index",
     "ncwc/completed_outer_iters",
     "ncwc/scsc_inner_iters",
@@ -132,6 +136,12 @@ GCMO_STAGE_METRICS = (
     "gcmo/post/lambda_distance",
     "gcmo/post/lambda_touched_bound",
     "gcmo/post/z_lambda_touched_bound",
+    "gcmo/warm_start/primal_dual_gap",
+    "gcmo/post/primal_dual_gap",
+)
+WARM_START_METRIC_FIELDS = (
+    "num_iters", "target_num_iters", "capped", "terminated", "objective",
+    "lower_bound", "certificate_gap", "epsilon", "stopping_rule", "stopping_reason",
 )
 
 # Global state placeholders for the current problem instance and iteration
@@ -177,15 +187,14 @@ def _configure_run_metrics(run):
     run.define_metric(step_metric)
     for metric_name in NCWC_HISTORY_METRICS:
         run.define_metric(metric_name, step_metric=step_metric)
-    run.define_metric("fop/stage/index")
-    for metric_name in FOP_STAGE_METRICS:
-        run.define_metric(metric_name, step_metric="fop/stage/index")
-    run.define_metric("smo/stage/index")
-    for metric_name in SMO_STAGE_METRICS:
-        run.define_metric(metric_name, step_metric="smo/stage/index")
-    run.define_metric("gcmo/stage/index")
-    for metric_name in GCMO_STAGE_METRICS:
-        run.define_metric(metric_name, step_metric="gcmo/stage/index")
+    for method, stage_metrics in (
+        ("fop", FOP_STAGE_METRICS), ("smo", SMO_STAGE_METRICS), ("gcmo", GCMO_STAGE_METRICS),
+    ):
+        step_metric = f"{method}/stage/index"
+        run.define_metric(step_metric)
+        warm_metrics = tuple(f"{method}/warm_start/{field}" for field in WARM_START_METRIC_FIELDS)
+        for metric_name in dict.fromkeys(stage_metrics + warm_metrics):
+            run.define_metric(metric_name, step_metric=step_metric)
 
 
 def init_instance_run(problem_size, instance_idx, instance_position, num_instances):
@@ -208,11 +217,13 @@ def init_instance_run(problem_size, instance_idx, instance_position, num_instanc
         "max_outer_iters": MAX_OUTER_ITERS,
         "alg4_max_iters": ALG4_MAX_ITERS,
         "fop_lip_scale": FOP_LIP_SCALE,
+        "fop_agd_max_iters": FOP_AGD_MAX_ITERS,
         "smo_eps": SMO_EPS,
         "smo_epsilon_0": SMO_EPSILON_0,
         "smo_tau": SMO_TAU,
         "smo_subproblem_max_iters": SMO_SUBPROBLEM_MAX_ITERS,
         "smo_lip_scale": SMO_LIP_SCALE,
+        "smo_agd_max_iters": SMO_AGD_MAX_ITERS,
         "gcmo_eps": GCMO_EPS,
         "gcmo_max_iters": GCMO_MAX_ITERS,
         "gcmo_lagrange_bound": GCMO_LAGRANGE_BOUND,
@@ -254,6 +265,13 @@ def log_stage(run, metrics, step):
     run.log(_compact_metrics(metrics))
 
 
+def warm_start_metrics(method, stats):
+    return {
+        f"{method}/warm_start/{field}": float(stats[field]) if isinstance(stats[field], bool) else stats[field]
+        for field in WARM_START_METRIC_FIELDS if field in stats
+    }
+
+
 def build_ncwc_progress_logger(run, ncwc_state):
     def callback(payload):
         is_new_call = (
@@ -278,6 +296,7 @@ def build_ncwc_progress_logger(run, ncwc_state):
                 "ncwc/upper_obj": metrics.get("upper_obj", payload["objective"]),
                 "ncwc/feas": metrics.get("feas"),
                 "ncwc/lower_gap": metrics.get("lower_gap"),
+                "ncwc/primal_dual_gap": metrics.get("primal_dual_gap"),
                 "ncwc/call_index": call_index,
                 "ncwc/completed_outer_iters": payload["completed_outer_iters"],
                 "ncwc/scsc_inner_iters": payload["scsc_num_inner_iters"],
@@ -311,6 +330,11 @@ def project_box(v):
     return torch.clamp(v, min=-1.0, max=1.0)
 
 
+def box_linear_minimizer(coefficients):
+    """Exact linear minimizer over the product of [-1, 1] primal boxes."""
+    return [-torch.sign(coefficient) for coefficient in coefficients]
+
+
 def positive_part(v):
     return torch.clamp(v, min=0.0)
 
@@ -342,6 +366,17 @@ def lower_objective(x_vec, z_vec):
 
 def constraint_residual(x_vec, z_vec):
     return A_MAT @ x_vec + B_MAT @ z_vec - B_VEC
+
+
+@torch.no_grad()
+def lower_primal_dual_gap(x_vec, y_vec, lambda_vec, lagrange_bound):
+    """Unscaled equation-(24) gap for the linear lower problem and dual box."""
+    residual = constraint_residual(x_vec, y_vec)
+    primal_value = torch.dot(D_TILDE, y_vec) + lagrange_bound * positive_part(residual).sum()
+    dual_value = torch.dot(lambda_vec, A_MAT @ x_vec - B_VEC) - torch.abs(
+        D_TILDE + B_MAT.T @ lambda_vec
+    ).sum()
+    return float((primal_value - dual_value).item())
 
 
 def feasibility_norm(x_vec, z_vec):
@@ -501,6 +536,7 @@ def build_gcmo_diagnostics(x_vec, y_vec, z_vec, lambda_vec, z_lambda_vec, solver
     solver_stats = solver_result["solver_stats"]
     bound_tol = 1e-10
     diagnostics = {
+        "primal_dual_gap": lower_primal_dual_gap(x_vec, y_vec, lambda_vec, lagrange_bound),
         "upper_obj": upper_objective(x_vec, y_vec),
         "y_feas": y_metrics["feas"],
         "y_lower_obj": y_metrics["lower_obj"],
@@ -538,7 +574,7 @@ def run_single_instance_fop(instance_idx, problem_size, instance_position, num_i
     run_finished = False
 
     x_prev = torch.zeros(N)
-    y_prev = torch.zeros(M)
+    y_prev = Y_HAT.detach().clone()
     initial_objective = upper_objective(x_prev, y_prev)
     log_history(run, {"instance/initial_objective": initial_objective})
     gtilde_hi = compute_gtilde_hi()
@@ -587,6 +623,7 @@ def run_single_instance_fop(instance_idx, problem_size, instance_position, num_i
                 "fop/warm_start/num_iters": payload["warm_start_iters"],
                 "fop/warm_start/target_num_iters": payload["warm_start_target_iters"],
                 "fop/warm_start/capped": float(payload["warm_start_capped"]),
+                **warm_start_metrics("fop", payload["warm_start_stats"]),
                 "fop/subproblem/num_outer_iters": payload["subproblem_stats"]["num_outer_iters"],
                 "fop/subproblem/num_inner_iters": payload["subproblem_stats"]["num_inner_iters"],
                 "fop/subproblem/final_diff": payload["subproblem_stats"]["final_diff"],
@@ -601,7 +638,8 @@ def run_single_instance_fop(instance_idx, problem_size, instance_position, num_i
         if VERBOSE:
             print(
                 f"  Instance {instance_label}: outer={payload['stage_index']} "
-                f"warm_start_iters={payload['warm_start_iters']}/{payload['warm_start_target_iters']} "
+                f"warm_start_iters={payload['warm_start_iters']} "
+                f"warm_start_estimate={payload['warm_start_target_iters']} "
                 f"warm_start_capped={int(payload['warm_start_capped'])} "
                 f"solver_outer={payload['subproblem_stats']['num_outer_iters']} "
                 f"feas={metrics['feas']:.3e} gap={metrics['lower_gap']:.3e} upper={metrics['upper_obj']:.3e}",
@@ -629,6 +667,8 @@ def run_single_instance_fop(instance_idx, problem_size, instance_position, num_i
             final_epsilon=FINAL_EPS,
             feas_tol=FEAS_TOL,
             lower_gap_tol=LOWER_GAP_TOL,
+            warm_start_max_iter=FOP_AGD_MAX_ITERS,
+            warm_start_linear_minimizer=box_linear_minimizer,
             subproblem_max_iter=ALG4_MAX_ITERS,
             max_outer_iters=MAX_OUTER_ITERS,
             objective_func=upper_smooth,
@@ -699,7 +739,7 @@ def run_single_instance_smo(instance_idx, problem_size, instance_position, num_i
     start_time = time.perf_counter()
     run_finished = False
     initial_x = torch.zeros(N)
-    initial_y = torch.zeros(M)
+    initial_y = Y_HAT.detach().clone()
     initial_objective = upper_objective(initial_x, initial_y)
     log_history(run, {"instance/initial_objective": initial_objective})
     gtilde_hi = compute_gtilde_hi()
@@ -752,6 +792,7 @@ def run_single_instance_smo(instance_idx, problem_size, instance_position, num_i
             "smo/warm_start/num_iters": payload["warm_start_iters"],
             "smo/warm_start/target_num_iters": payload["warm_start_target_iters"],
             "smo/warm_start/capped": float(payload["warm_start_capped"]),
+            **warm_start_metrics("smo", payload["warm_start_stats"]),
             "smo/subproblem/num_outer_iters": stage_diag["subproblem_num_outer_iters"],
             "smo/subproblem/num_inner_iters": stage_diag["subproblem_num_inner_iters"],
             "smo/subproblem/final_diff": stage_diag["subproblem_final_diff"],
@@ -806,6 +847,8 @@ def run_single_instance_smo(instance_idx, problem_size, instance_position, num_i
             epsilon=SMO_EPS,
             tau=SMO_TAU,
             epsilon_0=SMO_EPSILON_0,
+            warm_start_max_iter=SMO_AGD_MAX_ITERS,
+            warm_start_linear_minimizer=box_linear_minimizer,
             subproblem_max_iter=SMO_SUBPROBLEM_MAX_ITERS,
             stage_callback=stage_callback,
             verbose=VERBOSE,
@@ -922,7 +965,7 @@ def run_single_instance_gcmo(instance_idx, problem_size, instance_position, num_
     start_time = time.perf_counter()
     run_finished = False
     initial_x = torch.zeros(N)
-    initial_y = torch.zeros(M)
+    initial_y = Y_HAT.detach().clone()
     initial_objective = upper_objective(initial_x, initial_y)
     log_history(run, {"instance/initial_objective": initial_objective})
     gtilde_hi = compute_gtilde_hi()
@@ -973,9 +1016,22 @@ def run_single_instance_gcmo(instance_idx, problem_size, instance_position, num_
             metrics_func=evaluate_ncwc_iterate,
             progress_callback=ncwc_progress_callback,
             lip_override=GCMO_LIP_OVERRIDE,
-            warm_start_lower=GCMO_AGD_MAX_ITERS > 0,
+            warm_start_lower=True,
             warm_start_max_iter=GCMO_AGD_MAX_ITERS,
             warm_start_D_y=compute_d_y(),
+            warm_start_linear_minimizer=box_linear_minimizer,
+            primal_dual_gap_func=lambda x_vals, y_vals, lambda_vec: lower_primal_dual_gap(
+                x_vals[0], y_vals[0], lambda_vec, GCMO_LAGRANGE_BOUND,
+            ),
+            warm_start_callback=lambda stats: log_stage(
+                run,
+                {
+                    "gcmo/stage/index": 0,
+                    **warm_start_metrics("gcmo", stats),
+                    "gcmo/warm_start/primal_dual_gap": stats["primal_dual_gap"],
+                },
+                step=0,
+            ),
         )
 
         x_final = x_tensor.detach().clone()
@@ -1017,6 +1073,7 @@ def run_single_instance_gcmo(instance_idx, problem_size, instance_position, num_
                 "gcmo/subproblem/final_diff": diagnostics["subproblem_final_diff"],
                 "gcmo/subproblem/terminated": diagnostics["subproblem_terminated"],
                 "gcmo/post/upper_obj": diagnostics["upper_obj"],
+                "gcmo/post/primal_dual_gap": diagnostics["primal_dual_gap"],
                 "gcmo/post/y_feas": diagnostics["y_feas"],
                 "gcmo/post/y_lower_gap": diagnostics["y_lower_gap"],
                 "gcmo/post/z_feas": diagnostics["z_feas"],

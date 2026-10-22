@@ -227,6 +227,7 @@ def optimize_bilevel_contrained_fop_practical(
     log_every=1,
     outer_desc=None,
     lip_scale=None,
+    warm_start_linear_minimizer=None,
 ):
     """
     Practical outer-loop wrapper for FOP that warm-starts each stage and
@@ -303,6 +304,7 @@ def optimize_bilevel_contrained_fop_practical(
             epsilon_k,
             D_y,
             max_iter=warm_start_max_iter,
+            linear_minimizer=warm_start_linear_minimizer,
         )
         y_tilde_prev = clone_vals(y_init)
 
@@ -346,6 +348,7 @@ def optimize_bilevel_contrained_fop_practical(
             "warm_start_iters": warm_start_stats["num_iters"],
             "warm_start_target_iters": warm_start_stats["target_num_iters"],
             "warm_start_capped": warm_start_stats["capped"],
+            "warm_start_stats": warm_start_stats,
             "lip_h": last_solver_result["lip_h"],
             "computed_lip_h": last_solver_result["computed_lip_h"],
             "lip_scale": last_solver_result["lip_scale"],
@@ -413,6 +416,7 @@ def optimize_bilevel_constrained_smo(
     metrics_func=None,
     progress_callback=None,
     lip_scale=None,
+    warm_start_linear_minimizer=None,
 ):
     """
     Algorithm 1 for the constrained bilevel reformulation in the sigma = 0 case.
@@ -514,6 +518,7 @@ def optimize_bilevel_constrained_smo(
             epsilon_k,
             D_y,
             max_iter=warm_start_max_iter,
+            linear_minimizer=warm_start_linear_minimizer,
         )
         assign_vals(params_y, y_init)
         if z_state is None:
@@ -577,6 +582,7 @@ def optimize_bilevel_constrained_smo(
             "warm_start_iters": warm_start_stats["num_iters"],
             "warm_start_target_iters": warm_start_stats["target_num_iters"],
             "warm_start_capped": warm_start_stats["capped"],
+            "warm_start_stats": warm_start_stats,
             "lip_h": lip_h,
             "computed_lip_h": computed_lip_h,
             "lip_scale": lip_scale,
@@ -644,6 +650,9 @@ def optimize_bilevel_constrained_minimax(
         warm_start_max_iter=None,
         warm_start_D_y=None,
         warm_start_epsilon=None,
+        warm_start_linear_minimizer=None,
+        primal_dual_gap_func=None,
+        warm_start_callback=None,
 ):
     """
     Our proposed method for the constrained penalty reformulation.
@@ -651,6 +660,11 @@ def optimize_bilevel_constrained_minimax(
     Using the Lagrangian formulation of the lower level problem, we solve only one instance of NCWC problem.
     When warm_start_lower is enabled, initialize the lower primal-dual block
     with AGD on a smooth quadratic-penalty lower subproblem.
+
+    primal_dual_gap_func(x_values, y_values, lambda_tensor) optionally evaluates
+    the unscaled lower primal-dual gap. warm_start_callback receives the AGD
+    statistics and initial gap before the main solve. Existing metrics_func
+    continues to receive only the x and primal y blocks.
     """
 
     if epsilon <= 0:
@@ -668,6 +682,10 @@ def optimize_bilevel_constrained_minimax(
         raise ValueError(f"Invalid warm_start_epsilon: {warm_start_epsilon}")
     if log_every <= 0:
         raise ValueError(f"Invalid log_every: {log_every}")
+    for name, callback in (("primal_dual_gap_func", primal_dual_gap_func),
+                           ("warm_start_callback", warm_start_callback)):
+        if callback is not None and not callable(callback):
+            raise TypeError(f"{name} must be callable")
 
     params_x = list(params_x)
     params_y1 = list(params_y1)
@@ -723,6 +741,7 @@ def optimize_bilevel_constrained_minimax(
             warm_epsilon,
             warm_D_y,
             max_iter=warm_start_max_iter,
+            linear_minimizer=warm_start_linear_minimizer,
         )
         warm_start_stats.update(
             {
@@ -736,11 +755,27 @@ def optimize_bilevel_constrained_minimax(
         assign_vals(params_z1, y_init)
         with torch.no_grad():
             lambda_init = prox_lagrange_multipliers(
-                warm_mu * _positive_part(lower_constraints(params_x, params_y1)),
+                2.0 * warm_mu * _positive_part(lower_constraints(params_x, params_y1)),
                 coeff=1.0,
             ).detach()
         assign_vals(params_y2, [lambda_init])
         assign_vals(params_z2, [lambda_init])
+
+    def evaluate_primal_dual_gap(x_vals, y_vals, lambda_vec):
+        with torch.no_grad():
+            gap = float(primal_dual_gap_func(x_vals, y_vals, lambda_vec))
+        if not math.isfinite(gap):
+            raise ValueError("Nonfinite lower primal-dual gap")
+        return gap
+
+    initial_primal_dual_gap = None
+    if primal_dual_gap_func is not None:
+        initial_primal_dual_gap = evaluate_primal_dual_gap(params_x, params_y1, params_y2[0])
+    if warm_start_lower and warm_start_callback is not None:
+        warm_start_callback({
+            **warm_start_stats,
+            "primal_dual_gap": initial_primal_dual_gap,
+        })
 
     def h_lagrangian():
         upper_term = upper_smooth(params_x, params_y1)
@@ -759,6 +794,17 @@ def optimize_bilevel_constrained_minimax(
     prox_z1_z2 = [_scale_prox_spec(p, rho) for p in prox_y1_funcs] + [_scale_prox_spec(prox_lagrange_multipliers, rho)]
     ncwc_objective = _adapt_ncwc_objective(objective_func, len(params_x), len(params_y1))
     ncwc_metrics = _adapt_ncwc_metrics(metrics_func, len(params_x), len(params_y1))
+    if primal_dual_gap_func is not None:
+        primal_metrics = ncwc_metrics
+
+        def ncwc_metrics(min_block, max_block):
+            metrics = {} if primal_metrics is None else dict(primal_metrics(min_block, max_block) or {})
+            y_start = len(params_x)
+            dual_start = y_start + len(params_y1)
+            metrics["primal_dual_gap"] = evaluate_primal_dual_gap(
+                min_block[:y_start], min_block[y_start:dual_start], min_block[dual_start],
+            )
+            return metrics
 
     computed_lip_h = (
         L_grad_f1
@@ -797,5 +843,6 @@ def optimize_bilevel_constrained_minimax(
         "lip_override": lip_override,
         "warm_start_lower": warm_start_lower,
         "warm_start_stats": warm_start_stats,
+        "initial_primal_dual_gap": initial_primal_dual_gap,
         "solver_stats": solver_stats,
     }
