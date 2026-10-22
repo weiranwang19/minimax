@@ -243,9 +243,13 @@ class CBLODiagnosticsTests(unittest.TestCase):
                     agd_inputs.append(clone_vals(values))
                     self.assertIsNone(kwargs['max_iter'])
                     self.assertIs(kwargs['linear_minimizer'], cblo.box_linear_minimizer)
+                    self.assertIsNotNone(kwargs['value_and_grad_func'])
                     return agd_convex(values, *args, **kwargs)
 
                 def minimax(min_block, max_block, *args, **kwargs):
+                    self.assertFalse(any(v.requires_grad for v in min_block+max_block))
+                    self.assertTrue(callable(kwargs['gradient_func']))
+                    self.assertTrue(callable(kwargs['gradient_difference_func']))
                     for step in (0, 1):
                         if step:
                             with torch.no_grad():
@@ -271,12 +275,16 @@ class CBLODiagnosticsTests(unittest.TestCase):
                     stack.enter_context(mock.patch.object(cblo, '_resolve_wandb', return_value=wandb))
                     stack.enter_context(mock.patch.object(solvers, 'agd_convex', side_effect=warmup))
                     stack.enter_context(mock.patch.object(solvers, 'optimize_NCWC', side_effect=minimax))
+                    for target in ('torch.autograd.grad', 'torch.autograd.backward', 'torch.Tensor.backward'):
+                        stack.enter_context(mock.patch(target, side_effect=AssertionError('Unexpected autograd')))
                     stack.enter_context(contextlib.redirect_stdout(io.StringIO()))
                     result = cblo.run_single_instance(2, (2, 3, 1), 1, 1)
                 self.assertEqual(len(agd_inputs), 1)
                 torch.testing.assert_close(agd_inputs[0][0], seed)
                 torch.testing.assert_close(cblo.Y_HAT, seed)
                 self.assertAlmostEqual(result['initial_objective'], (cblo.D @ seed).item())
+                self.assertEqual(wandb.config['gradient_backend'], 'explicit')
+                self.assertNotIn('fop_explicit_gradients', wandb.config)
                 for name in ('fop_agd_max_iters', 'smo_agd_max_iters', 'gcmo_agd_max_iters'):
                     self.assertIsNone(wandb.config[name])
                 warm_rows = [row for row in wandb.run.rows if f'{method}/warm_start/certificate_gap' in row]

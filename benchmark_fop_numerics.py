@@ -59,7 +59,7 @@ def make_solver(stable, explicit):
     z = experiment.Y_HAT.detach().clone().requires_grad_(True)
     min_anchor, max_anchor = clone_vals([x, y]), clone_vals([z])
     grad, diff = _regularize_gradient_callbacks(
-        *experiment.make_fop_gradients(RHO, RHO**2),
+        *experiment.LinearCBLOOracle.from_current_instance().saddle_gradients('fop', RHO, RHO**2),
         min_anchor, max_anchor, LIP_H, SIGMA_Y,
     )
 
@@ -203,13 +203,14 @@ def render_report(data):
         '## Implemented changes', '',
         '- `Minimax_SCSC` now annotates the input coefficients, gradient definitions, and update blocks '
         'against [Algorithm 5, page 25](https://arxiv.org/pdf/2301.01716#page=25). '
-        'Existing deviations such as finite caps, the beta multiplier, and the strict stopping comparison are documented.',
+        'Existing deviations such as finite caps and the beta multiplier are documented.',
         '- Its optional box residual evaluates the line-25 projection quotients with algebraically equivalent '
         'clipped gradients. The step size, projected iterates, norm, and tolerance are unchanged.',
-        '- Optional explicit gradient/difference callbacks are passed through FOP and regularized by NCWC. '
-        'They are enabled only for the linear CBLO FOP path; generic callers retain autograd and the generic prox residual.',
-        '- `FOP_STABLE_BOX_RESIDUAL` and `FOP_EXPLICIT_GRADIENTS` are enabled by default and recorded in run configuration. '
-        'AGD, SMO, GCMO, and the existing experiment settings were not changed.', '',
+        '- The shared `LinearCBLOOracle` supplies explicit gradient/difference callbacks for CBLO FOP, SMO, and GCMO, '
+        'with regularization supplied by NCWC. AGD warm-ups also use explicit value/gradient callbacks. '
+        'Generic callers retain autograd; this benchmark intentionally retains autograd reference variants.',
+        '- CBLO always uses explicit gradients and records `gradient_backend="explicit"`. '
+        '`FOP_STABLE_BOX_RESIDUAL` remains independently configurable; this benchmark varies both mechanisms explicitly.', '',
         '## Setup', '',
         '- One `(400, 400, 20)` instance, index `1`, seed `0`, generated once and cloned for every trial.',
         '- CPU float64; one Torch thread; initial `x=0`, `y=z=Y_HAT`; regularization anchors equal these initial values.',

@@ -3,6 +3,7 @@
 import math
 import time
 import tqdm
+from functools import partial
 
 import torch
 from scipy.optimize import linprog
@@ -35,7 +36,6 @@ FOP_LIP_SCALE = 0.1
 # None runs AGD until certified; a nonnegative integer caps its updates.
 FOP_AGD_MAX_ITERS = None
 FOP_STABLE_BOX_RESIDUAL = True
-FOP_EXPLICIT_GRADIENTS = True
 
 # SMO
 SMO_EPS = 1e-2
@@ -49,7 +49,7 @@ SMO_AGD_MAX_ITERS = None
 GCMO_EPS = 1e-2
 GCMO_MAX_ITERS = 200
 GCMO_LAGRANGE_BOUND = 200
-GCMO_LIP_OVERRIDE = 6
+GCMO_LIP_OVERRIDE = None
 # None runs until certified; 0 evaluates the seed without AGD updates.
 GCMO_AGD_MAX_ITERS = None
 
@@ -221,7 +221,7 @@ def init_instance_run(problem_size, instance_idx, instance_position, num_instanc
         "fop_lip_scale": FOP_LIP_SCALE,
         "fop_agd_max_iters": FOP_AGD_MAX_ITERS,
         "fop_stable_box_residual": FOP_STABLE_BOX_RESIDUAL,
-        "fop_explicit_gradients": FOP_EXPLICIT_GRADIENTS,
+        "gradient_backend": "explicit",
         "smo_eps": SMO_EPS,
         "smo_epsilon_0": SMO_EPSILON_0,
         "smo_tau": SMO_TAU,
@@ -359,42 +359,134 @@ def lower_constraints(x_params, z_params):
     return A_MAT @ x_params[0] + B_MAT @ z_params[0] - B_VEC
 
 
-def make_fop_gradients(rho, mu):
-    """Explicit gradients for this linear experiment's FOP saddle objective.
+class LinearCBLOOracle:
+    """Exact derivatives for this experiment; NCWC adds its regularization.
 
-    Min block is [x, y], max block is [z]. NCWC supplies its own quadratic
-    regularization. Capture the current instance so later global changes
-    cannot change an already-created oracle.
+    Capture the instance independently of later changes to experiment globals.
+    The data tensors are treated as immutable. Gradient callbacks return true
+    derivatives in both blocks; the solver handles the maximization signs.
     """
-    a, b, rhs, c, d, d_tilde = A_MAT, B_MAT, B_VEC, C, D, D_TILDE
-    at, bt = a.T, b.T
-    penalty_scale = 2.0 * rho * mu
-    lower_gradient = rho * d_tilde
 
-    def residuals(min_vals, max_vals):
-        x, y = min_vals
-        z, = max_vals
-        ax_minus_b = a @ x - rhs
-        return positive_part(ax_minus_b + b @ y), positive_part(ax_minus_b + b @ z)
+    def __init__(self, a, b, rhs, c, d, d_tilde):
+        self.a, self.b, self.rhs, self.c, self.d, self.d_tilde = (
+            v.detach() for v in (a, b, rhs, c, d, d_tilde)
+        )
+        self.at, self.bt = self.a.T, self.b.T
+
+    @classmethod
+    def from_current_instance(cls):
+        return cls(A_MAT, B_MAT, B_VEC, C, D, D_TILDE)
+
+    @staticmethod
+    def _check_method(method, mu, lambda_k):
+        if method not in {"fop", "smo", "gcmo"}:
+            raise ValueError(f"Unknown CBLO method: {method}")
+        if method in {"fop", "smo"} and (mu is None or mu <= 0):
+            raise ValueError("FOP/SMO require positive mu")
+        if method == "smo" and lambda_k is None:
+            raise ValueError("SMO requires a stage multiplier")
+
+    def _residuals(self, min_vals, max_vals):
+        x, y = min_vals[:2]
+        z = max_vals[0]
+        ax_minus_b = self.a @ x - self.rhs
+        return ax_minus_b + self.b @ y, ax_minus_b + self.b @ z
+
+    @staticmethod
+    def _penalty(residual, method, rho, mu, lambda_k, with_value=False):
+        # FOP (30), (33)-(34), pp. 7-8:
+        # https://arxiv.org/pdf/2301.01716#page=7
+        # rho*mu*||[s]+||^2 has derivative 2*rho*mu*[s]+.
+        # SMO (8), p. 4: https://arxiv.org/pdf/2511.07398#page=4
+        # ||[lambda+mu*s]+||^2/(2*mu) has derivative [lambda+mu*s]+;
+        # the 2*mu cancels, with no additional rho outside the weights.
+        if method == "smo":
+            positive = (lambda_k + mu * residual).clamp_min(0)
+            weight = positive
+            coefficient = 1.0 / (2.0 * mu)
+        else:
+            positive = residual.clamp_min(0)
+            coefficient = rho * mu
+            weight = (2.0 * coefficient) * positive
+        if with_value:
+            return coefficient * positive.square().sum(), weight
+        return weight
+
+    def _primal_gradients(self, wy, wz):
+        return self.at @ (wy-wz), self.bt @ wy, -(self.bt @ wz)
+
+    def saddle_gradients(self, method, rho, mu=None, lambda_k=None):
+        self._check_method(method, mu, lambda_k)
+        if rho <= 0:
+            raise ValueError("rho must be positive")
+        lam = None if lambda_k is None else lambda_k.detach().clone()
+        lower_gradient = rho * self.d_tilde
+
+        def weights(min_vals, max_vals):
+            if method == "gcmo":
+                # h = upper + rho*(lower_y + beta*s_y - lower_z - alpha*s_z).
+                # alpha=y2 belongs to min; beta=z2 belongs to max.
+                return rho * max_vals[1], rho * min_vals[2]
+            sy, sz = self._residuals(min_vals, max_vals)
+            return (self._penalty(sy, method, rho, mu, lam),
+                    self._penalty(sz, method, rho, mu, lam))
+
+        @torch.no_grad()
+        def gradient(min_vals, max_vals):
+            gx, gy, gz = self._primal_gradients(*weights(min_vals, max_vals))
+            min_grads = [self.c + gx, self.d + lower_gradient + gy]
+            max_grads = [-lower_gradient + gz]
+            if method == "gcmo":
+                sy, sz = self._residuals(min_vals, max_vals)
+                min_grads.append(-rho * sz)
+                max_grads.append(rho * sy)
+            return min_grads, max_grads
+
+        @torch.no_grad()
+        def difference(old_min, old_max, new_min, new_max):
+            if method == "gcmo":
+                dwy = rho * (new_max[1]-old_max[1])
+                dwz = rho * (new_min[2]-old_min[2])
+            else:
+                old_wy, old_wz = weights(old_min, old_max)
+                new_wy, new_wz = weights(new_min, new_max)
+                dwy, dwz = new_wy-old_wy, new_wz-old_wz
+            # c, d and rho*d_tilde cancel before assembling new-minus-old.
+            dx, dy, dz = self._primal_gradients(dwy, dwz)
+            min_diff, max_diff = [dx, dy], [dz]
+            if method == "gcmo":
+                adx = self.a @ (new_min[0]-old_min[0])
+                min_diff.append(-rho * (adx + self.b @ (new_max[0]-old_max[0])))
+                max_diff.append(rho * (adx + self.b @ (new_min[1]-old_min[1])))
+            return min_diff, max_diff
+
+        return gradient, difference
 
     @torch.no_grad()
-    def gradient(min_vals, max_vals):
-        ry, rz = residuals(min_vals, max_vals)
-        return ([c + penalty_scale * (at @ (ry-rz)),
-                 d + lower_gradient + penalty_scale * (bt @ ry)],
-                [-lower_gradient - penalty_scale * (bt @ rz)])
+    def warm_start_value_and_grad(self, method, x_vals, rho, mu, lambda_k=None):
+        self._check_method(method, mu, lambda_k)
+        if rho <= 0 or mu <= 0:
+            raise ValueError("Warm-up rho and mu must be positive")
+        x, = x_vals
+        ax_minus_b = self.a @ x.detach().clone() - self.rhs
+        lam = None if lambda_k is None else lambda_k.detach().clone()
+        # SMO (9), p. 5, divides its saddle penalty by rho. FOP (30)
+        # and GCMO's quadratic warm-up both use mu*||[s]+||^2.
+        penalty_method = "smo" if method == "smo" else "fop"
+        divisor = rho if method == "smo" else 1.0
 
-    @torch.no_grad()
-    def difference(old_min, old_max, new_min, new_max):
-        old_ry, old_rz = residuals(old_min, old_max)
-        new_ry, new_rz = residuals(new_min, new_max)
-        # New-minus-old directly: c, d and rho*d_tilde cancel algebraically,
-        # instead of subtracting full gradients with large common terms.
-        dry, drz = new_ry-old_ry, new_rz-old_rz
-        return ([penalty_scale * (at @ (dry-drz)), penalty_scale * (bt @ dry)],
-                [-penalty_scale * (bt @ drz)])
+        @torch.no_grad()
+        def value_and_grad(values):
+            z, = values
+            penalty, weight = self._penalty(
+                ax_minus_b + self.b @ z, penalty_method, 1.0, mu, lam,
+                with_value=True,
+            )
+            value = self.d_tilde @ z + penalty / divisor
+            gradient = self.d_tilde + (self.bt @ weight) / divisor
+            return value, [gradient]
 
-    return gradient, difference
+        return value_and_grad
 
 
 def upper_objective(x_vec, y_vec):
@@ -689,8 +781,9 @@ def run_single_instance_fop(instance_idx, problem_size, instance_position, num_i
             )
 
     try:
-        x_tensor = x_prev.clone().requires_grad_(True)
-        y_tensor = y_prev.clone().requires_grad_(True)
+        oracle = LinearCBLOOracle.from_current_instance()
+        x_tensor = x_prev.clone()
+        y_tensor = y_prev.clone()
         solver_result = optimize_bilevel_contrained_fop_practical(
             [x_tensor],
             [y_tensor],
@@ -722,7 +815,8 @@ def run_single_instance_fop(instance_idx, problem_size, instance_position, num_i
             log_every=SOLVER_LOG_EVERY,
             outer_desc=f"Instance {instance_label}",
             lip_scale=FOP_LIP_SCALE,
-            saddle_gradient_factory=make_fop_gradients if FOP_EXPLICIT_GRADIENTS else None,
+            saddle_gradient_factory=partial(oracle.saddle_gradients, "fop"),
+            warm_start_value_and_grad_factory=partial(oracle.warm_start_value_and_grad, "fop"),
             box_bounds=(-1.0, 1.0) if FOP_STABLE_BOX_RESIDUAL else None,
         )
 
@@ -872,8 +966,9 @@ def run_single_instance_smo(instance_idx, problem_size, instance_position, num_i
         }
 
     try:
-        x_tensor = initial_x.clone().requires_grad_(True)
-        y_tensor = initial_y.clone().requires_grad_(True)
+        oracle = LinearCBLOOracle.from_current_instance()
+        x_tensor = initial_x.clone()
+        y_tensor = initial_y.clone()
         solver_result = optimize_bilevel_constrained_smo(
             [x_tensor],
             [y_tensor],
@@ -901,6 +996,8 @@ def run_single_instance_smo(instance_idx, problem_size, instance_position, num_i
             metrics_func=evaluate_ncwc_iterate,
             progress_callback=ncwc_progress_callback,
             lip_scale=SMO_LIP_SCALE,
+            saddle_gradient_factory=partial(oracle.saddle_gradients, "smo"),
+            warm_start_value_and_grad_factory=partial(oracle.warm_start_value_and_grad, "smo"),
         )
 
         x_final = x_tensor.detach().clone()
@@ -1035,8 +1132,9 @@ def run_single_instance_gcmo(instance_idx, problem_size, instance_position, num_
         }
 
     try:
-        x_tensor = initial_x.clone().requires_grad_(True)
-        y_tensor = initial_y.clone().requires_grad_(True)
+        oracle = LinearCBLOOracle.from_current_instance()
+        x_tensor = initial_x.clone()
+        y_tensor = initial_y.clone()
         solver_result = optimize_bilevel_constrained_minimax(
             [x_tensor],
             [y_tensor],
@@ -1060,6 +1158,8 @@ def run_single_instance_gcmo(instance_idx, problem_size, instance_position, num_
             metrics_func=evaluate_ncwc_iterate,
             progress_callback=ncwc_progress_callback,
             lip_override=GCMO_LIP_OVERRIDE,
+            saddle_gradient_factory=partial(oracle.saddle_gradients, "gcmo"),
+            warm_start_value_and_grad_factory=partial(oracle.warm_start_value_and_grad, "gcmo"),
             warm_start_lower=True,
             warm_start_max_iter=GCMO_AGD_MAX_ITERS,
             warm_start_D_y=compute_d_y(),

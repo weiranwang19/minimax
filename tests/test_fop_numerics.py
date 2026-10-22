@@ -144,7 +144,8 @@ class ExplicitGradientTests(unittest.TestCase):
                 new_min = [old_min[0]+1e-8, old_min[1]-1e-8]
                 new_max = [old_max[0]+1e-8]
             grad, diff = minimax._regularize_gradient_callbacks(
-                *experiment.make_fop_gradients(rho, mu), *anchors, lip, sigma,
+                *experiment.LinearCBLOOracle.from_current_instance().saddle_gradients('fop', rho, mu),
+                *anchors, lip, sigma,
             )
             old_ref = self.reference(old_min, old_max, rho, mu, anchors, lip, sigma)
             new_ref = self.reference(new_min, new_max, rho, mu, anchors, lip, sigma)
@@ -158,7 +159,7 @@ class ExplicitGradientTests(unittest.TestCase):
                 self.assertFalse(actual.requires_grad)
 
     def test_factory_captures_instance(self):
-        grad, _ = experiment.make_fop_gradients(5., 25.)
+        grad, _ = experiment.LinearCBLOOracle.from_current_instance().saddle_gradients('fop', 5., 25.)
         points = self.points()
         expected = grad(*points)
         experiment.generate_instance((8, 7, 3), 2)
@@ -237,7 +238,8 @@ class ExplicitGradientTests(unittest.TestCase):
                 L_gtilde=experiment.CURRENT_L_G, gtilde_hi=experiment.compute_gtilde_hi(),
                 base_rho=1., final_epsilon=.01, warm_start_max_iter=0,
                 subproblem_max_iter=2, max_outer_iters=1,
-                saddle_gradient_factory=experiment.make_fop_gradients, box_bounds=(-1., 1.),
+                saddle_gradient_factory=lambda rho, mu: experiment.LinearCBLOOracle.from_current_instance().saddle_gradients('fop', rho, mu),
+                box_bounds=(-1., 1.),
             )
         self.assertTrue(observed)
         self.assertEqual(result['num_outer_iters'], 1)

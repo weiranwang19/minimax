@@ -366,8 +366,8 @@ class Minimax_SCSC(Optimizer):
             #         f"Minimax_SCSC outer={k} inner_t={t} delta={final_delta:.3e} tau={self.tau:.3e}"
             #     )
 
-            # Line 25: preserve existing strict '<' (the paper uses '<=').
-            if delta < self.tau:
+            # Line 25.
+            if delta <= self.tau + 1e-8:
                 terminated = True
                 break
 
@@ -693,7 +693,8 @@ def optimize_NCWC(
         final_diff = float(diff.item())
         num_outer_iters = k + 1
         num_inner_iters += solver_stats["num_inner_iters"]
-        ncwc_terminated = diff <= epsilon / (4 * lip_h)
+        exit_criteria_gap = diff - epsilon / (4 * lip_h)
+        ncwc_terminated = exit_criteria_gap <= 0
 
         if progress_callback is not None:
             progress_callback(
@@ -716,7 +717,7 @@ def optimize_NCWC(
             k % log_every == 0 or final_diff <= epsilon / (4 * lip_h) or num_outer_iters == max_iter
         ):
             print(
-                f"optimize_NCWC outer={k} epsilon_k={epsilon_k:.3e} diff={final_diff:.3e} "
+                f"optimize_NCWC outer={k} epsilon_k={epsilon_k:.3e} exit_criteria_gap={exit_criteria_gap:.3e} "
                 f"inner_terminated={solver_stats['terminated']}",
                 flush=True,
             )

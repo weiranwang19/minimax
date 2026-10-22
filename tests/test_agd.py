@@ -147,6 +147,41 @@ class CertifiedAGDTests(unittest.TestCase):
                 self.assertEqual(stats['capped'], cap is not None)
                 self.assertNotIn('certificate_gap', stats)
 
+    def test_explicit_affine_constant_and_fixed_iteration_paths(self):
+        for constant, certified, cap in ((True, True, None), (False, True, None),
+                                          (False, True, 0), (False, False, 3)):
+            with self.subTest(constant=constant, certified=certified, cap=cap):
+                coefficients = torch.tensor([0., 0.] if constant else [2., -3.], dtype=torch.float64)
+                initial = [torch.tensor([.2, -.1], dtype=torch.float64)]
+                phi = lambda vs: coefficients @ vs[0] + 7.
+                callback = lambda vs: (phi(vs), [coefficients])
+                options = dict(L_grad_phi=0. if certified else 1., epsilon=1e-4, D_y=3.,
+                               max_iter=cap, linear_minimizer=box_oracle if certified else None)
+                expected, expected_stats = agd_convex(initial, phi, [box_prox], **options)
+                with mock.patch('torch.autograd.grad', side_effect=AssertionError('autograd')):
+                    actual, stats = agd_convex(initial, phi, [box_prox],
+                                              value_and_grad_func=callback, **options)
+                torch.testing.assert_close(actual[0], expected[0])
+                self.assertEqual(stats, expected_stats)
+
+    def test_explicit_callback_validation(self):
+        value = torch.zeros(2, dtype=torch.float64)
+        invalid = (
+            lambda vs: None,
+            lambda vs: (1., [value]),
+            lambda vs: (value, [value]),
+            lambda vs: (value.sum(), []),
+            lambda vs: (value.sum(), [value[:1]]),
+            lambda vs: (value.sum(), [value.float()]),
+            lambda vs: (value.sum()+float('nan'), [value]),
+            lambda vs: (value.sum(), [value+float('inf')]),
+        )
+        for callback in invalid:
+            with self.subTest(callback=callback), self.assertRaises(ValueError):
+                self.solve(lambda vs: vs[0].sum(), value_and_grad_func=callback, cap=0)
+        with self.assertRaises(TypeError):
+            self.solve(lambda vs: vs[0].sum(), value_and_grad_func=True)
+
 
 if __name__ == '__main__':
     unittest.main()

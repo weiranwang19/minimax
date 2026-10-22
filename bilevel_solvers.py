@@ -136,7 +136,7 @@ def optimize_bilevel_constrained_fop(
     mu = epsilon ** -2
     epsilon_0 = epsilon ** (5 / 2)
 
-    z_params = clone_vals(params_y, requires_grad=True)
+    z_params = clone_vals(params_y, requires_grad=saddle_gradient_factory is None)
 
     def h_alg4():
         upper_term = upper_smooth(params_x, params_y)
@@ -243,11 +243,14 @@ def optimize_bilevel_contrained_fop_practical(
     warm_start_linear_minimizer=None,
     saddle_gradient_factory=None,
     box_bounds=None,
+    warm_start_value_and_grad_factory=None,
 ):
     """
     Practical outer-loop wrapper for FOP that warm-starts each stage and
     repeatedly calls the constrained FOP subproblem solver with one shared
     lip_scale across all stages.
+    Optional warm_start_value_and_grad_factory(x_vals, rho, mu) supplies an
+    AGD value/gradient callback; absent factories preserve autograd.
     """
     if base_rho <= 0:
         raise ValueError(f"Invalid base_rho: {base_rho}")
@@ -311,6 +314,9 @@ def optimize_bilevel_contrained_fop_practical(
         # TODO: if L_hat_k is None, use provided initial value * base_rho**k
         L_hat_k = L_grad_ftilde1 + 2.0 * mu_k * (L_gtilde ** 2 + gtilde_hi * L_grad_gtilde)
 
+        warm_value_and_grad = None
+        if warm_start_value_and_grad_factory is not None:
+            warm_value_and_grad = warm_start_value_and_grad_factory(params_x, rho_k, mu_k)
         y_init, warm_start_stats = agd_convex(
             clone_vals(params_y),
             smooth_lower_penalty,
@@ -320,11 +326,12 @@ def optimize_bilevel_contrained_fop_practical(
             D_y,
             max_iter=warm_start_max_iter,
             linear_minimizer=warm_start_linear_minimizer,
+            value_and_grad_func=warm_value_and_grad,
         )
         y_tilde_prev = clone_vals(y_init)
 
-        x_stage = clone_vals(params_x, requires_grad=True)
-        y_stage = clone_vals(y_tilde_prev, requires_grad=True)
+        x_stage = clone_vals(params_x, requires_grad=saddle_gradient_factory is None)
+        y_stage = clone_vals(y_tilde_prev, requires_grad=saddle_gradient_factory is None)
         last_solver_result = optimize_bilevel_constrained_fop(
             x_stage,
             y_stage,
@@ -434,6 +441,8 @@ def optimize_bilevel_constrained_smo(
     progress_callback=None,
     lip_scale=None,
     warm_start_linear_minimizer=None,
+    saddle_gradient_factory=None,
+    warm_start_value_and_grad_factory=None,
 ):
     """
     Algorithm 1 for the constrained bilevel reformulation in the sigma = 0 case.
@@ -442,6 +451,9 @@ def optimize_bilevel_constrained_smo(
     with Algorithm A.1 and solves each minimax stage via the existing B.2-style
     NCWC wrapper. When provided, lip_scale sets each stage's NCWC coefficient
     to lip_scale * mu_k.
+    Optional saddle_gradient_factory(rho, mu, lambda_k) returns the two saddle
+    gradient callbacks. warm_start_value_and_grad_factory(x_vals, rho, mu,
+    lambda_k) returns the AGD callback. lambda_k is fixed during each solve.
     """
     if epsilon <= 0:
         raise ValueError(f"Invalid epsilon: {epsilon}")
@@ -527,6 +539,9 @@ def optimize_bilevel_constrained_smo(
             + (mu_k * (L_gtilde ** 2 + gtilde_hi * L_grad_gtilde) + lambda_norm * L_grad_gtilde) / rho_k
         )
 
+        warm_value_and_grad = None
+        if warm_start_value_and_grad_factory is not None:
+            warm_value_and_grad = warm_start_value_and_grad_factory(params_x, rho_k, mu_k, lambda_k)
         y_init, warm_start_stats = agd_convex(
             clone_vals(params_y),
             smooth_lower_aug,
@@ -536,12 +551,13 @@ def optimize_bilevel_constrained_smo(
             D_y,
             max_iter=warm_start_max_iter,
             linear_minimizer=warm_start_linear_minimizer,
+            value_and_grad_func=warm_value_and_grad,
         )
         assign_vals(params_y, y_init)
         if z_state is None:
             z_state = clone_vals(y_init)
 
-        z_params = clone_vals(z_state, requires_grad=True)
+        z_params = clone_vals(z_state, requires_grad=saddle_gradient_factory is None)
 
         def h_smo():
             # Eq (8)
@@ -567,6 +583,9 @@ def optimize_bilevel_constrained_smo(
         lip_h = computed_lip_h if lip_override is None else lip_override
         subproblem_epsilon_0 = epsilon_k / (2.0 * math.sqrt(mu_k))
 
+        gradient_func = gradient_difference_func = None
+        if saddle_gradient_factory is not None:
+            gradient_func, gradient_difference_func = saddle_gradient_factory(rho_k, mu_k, lambda_k)
         subproblem_stats = optimize_NCWC(
             params_x + params_y,
             z_params,
@@ -583,6 +602,8 @@ def optimize_bilevel_constrained_smo(
             objective_func=ncwc_objective,
             metrics_func=ncwc_metrics,
             progress_callback=progress_callback,
+            gradient_func=gradient_func,
+            gradient_difference_func=gradient_difference_func,
         )
 
         z_state = clone_vals(z_params)
@@ -670,11 +691,17 @@ def optimize_bilevel_constrained_minimax(
         warm_start_linear_minimizer=None,
         primal_dual_gap_func=None,
         warm_start_callback=None,
+        saddle_gradient_factory=None,
+        warm_start_value_and_grad_factory=None,
 ):
     """
     Our proposed method for the constrained penalty reformulation.
 
     Using the Lagrangian formulation of the lower level problem, we solve only one instance of NCWC problem.
+    Optional saddle_gradient_factory(rho) returns callbacks for min blocks
+    (x, y1, y2) and max blocks (z1, z2). Optional
+    warm_start_value_and_grad_factory(x_vals, rho, warm_mu) supplies AGD's
+    callback. Absent factories preserve the generic autograd path.
     When warm_start_lower is enabled, initialize the lower primal-dual block
     with AGD on a smooth quadratic-penalty lower subproblem.
 
@@ -723,13 +750,14 @@ def optimize_bilevel_constrained_minimax(
 
     # Apply lower constraint once to get the number of constraints.
     # The copy of y.
-    params_z1 = clone_vals(params_y1, requires_grad=True)
+    use_autograd = saddle_gradient_factory is None
+    params_z1 = clone_vals(params_y1, requires_grad=use_autograd)
     tmp = lower_constraints(params_x, params_y1)
     num_constraints = tmp.shape[0]
     # Create and initialize the Lagrange multipliers.
-    params_y2 = [torch.zeros_like(tmp).requires_grad_(True)]
+    params_y2 = [torch.zeros_like(tmp).requires_grad_(use_autograd)]
     # The copy of y2.
-    params_z2 = [torch.zeros_like(tmp).requires_grad_(True)]
+    params_z2 = [torch.zeros_like(tmp).requires_grad_(use_autograd)]
     # import pdb; pdb.set_trace()
     # prox operators for y2 and z2.
     def prox_lagrange_multipliers(v, coeff):
@@ -750,6 +778,9 @@ def optimize_bilevel_constrained_minimax(
         warm_L = L_grad_ftilde1 + 2.0 * warm_mu * (
             L_gtilde ** 2 + gtilde_hi * L_grad_gtilde
         )
+        warm_value_and_grad = None
+        if warm_start_value_and_grad_factory is not None:
+            warm_value_and_grad = warm_start_value_and_grad_factory(params_x, rho, warm_mu)
         y_init, warm_start_stats = agd_convex(
             clone_vals(params_y1),
             smooth_lower_penalty,
@@ -759,6 +790,7 @@ def optimize_bilevel_constrained_minimax(
             warm_D_y,
             max_iter=warm_start_max_iter,
             linear_minimizer=warm_start_linear_minimizer,
+            value_and_grad_func=warm_value_and_grad,
         )
         warm_start_stats.update(
             {
@@ -830,6 +862,9 @@ def optimize_bilevel_constrained_minimax(
     lip_h = computed_lip_h if lip_override is None else lip_override
     print(f"Using lip_h={lip_h:.3e} (computed {computed_lip_h:.3e}, override {lip_override})")
 
+    gradient_func = gradient_difference_func = None
+    if saddle_gradient_factory is not None:
+        gradient_func, gradient_difference_func = saddle_gradient_factory(rho)
     solver_stats = optimize_NCWC(
         params_x + params_y1 + params_y2,
         params_z1 + params_z2,
@@ -847,6 +882,8 @@ def optimize_bilevel_constrained_minimax(
         objective_func=ncwc_objective,
         metrics_func=ncwc_metrics,
         progress_callback=progress_callback,
+        gradient_func=gradient_func,
+        gradient_difference_func=gradient_difference_func,
     )
 
     return {
