@@ -161,8 +161,13 @@ class LinearOracleTests(unittest.TestCase):
 
 class SolverIntegrationTests(unittest.TestCase):
     def test_all_wrappers_run_without_autograd_and_assign_projected_outputs(self):
-        for method in ('fop', 'smo', 'gcmo'):
-            with self.subTest(method=method):
+        for method, bounds_options in (
+            ('fop', {'box_bounds': (-1., 1.)}),
+            ('smo', {'box_bounds': (-1., 1.)}),
+            ('smo', {}),  # Generic callers omit bounds and retain the old residual.
+            ('gcmo', {}),
+        ):
+            with self.subTest(method=method, bounds_options=bounds_options):
                 cblo.generate_instance((2, 3, 2), 1)
                 oracle = cblo.LinearCBLOOracle.from_current_instance()
                 x, y = torch.zeros(2), cblo.Y_HAT.clone()
@@ -172,6 +177,7 @@ class SolverIntegrationTests(unittest.TestCase):
                 def run(solver):
                     self.assertIsNotNone(solver.gradient_func)
                     self.assertIsNotNone(solver.gradient_difference_func)
+                    self.assertEqual(solver.box_bounds, bounds_options.get('box_bounds'))
                     self.assertFalse(any(v.requires_grad for v in solver.get_x()+solver.get_y()))
                     assignments = {}
                     assign_x, assign_y = solver.assign_x, solver.assign_y
@@ -211,6 +217,7 @@ class SolverIntegrationTests(unittest.TestCase):
                     warm_start_linear_minimizer=cblo.box_linear_minimizer,
                     saddle_gradient_factory=saddle_factory,
                     warm_start_value_and_grad_factory=partial(oracle.warm_start_value_and_grad, method),
+                    **bounds_options,
                 )
                 with forbid_autograd(), mock.patch.object(minimax.Minimax_SCSC, 'run', run), mock.patch.object(
                     solvers, 'agd_convex', side_effect=warm,
@@ -218,7 +225,7 @@ class SolverIntegrationTests(unittest.TestCase):
                     if method == 'fop':
                         result = solvers.optimize_bilevel_contrained_fop_practical(
                             [x], [y], prox_y=cblo.prox_box, base_rho=2., final_epsilon=.01,
-                            max_outer_iters=2, subproblem_max_iter=2, box_bounds=(-1., 1.), **kwargs,
+                            max_outer_iters=2, subproblem_max_iter=2, **kwargs,
                         )
                     elif method == 'smo':
                         result = solvers.optimize_bilevel_constrained_smo(

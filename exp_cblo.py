@@ -44,6 +44,7 @@ SMO_TAU = 0.8
 SMO_SUBPROBLEM_MAX_ITERS = 200
 SMO_LIP_SCALE = 0.1
 SMO_AGD_MAX_ITERS = None
+SMO_STABLE_BOX_RESIDUAL = True
 
 # GCMO
 GCMO_EPS = 1e-2
@@ -228,6 +229,7 @@ def init_instance_run(problem_size, instance_idx, instance_position, num_instanc
         "smo_subproblem_max_iters": SMO_SUBPROBLEM_MAX_ITERS,
         "smo_lip_scale": SMO_LIP_SCALE,
         "smo_agd_max_iters": SMO_AGD_MAX_ITERS,
+        "smo_stable_box_residual": SMO_STABLE_BOX_RESIDUAL,
         "gcmo_eps": GCMO_EPS,
         "gcmo_max_iters": GCMO_MAX_ITERS,
         "gcmo_lagrange_bound": GCMO_LAGRANGE_BOUND,
@@ -998,6 +1000,7 @@ def run_single_instance_smo(instance_idx, problem_size, instance_position, num_i
             lip_scale=SMO_LIP_SCALE,
             saddle_gradient_factory=partial(oracle.saddle_gradients, "smo"),
             warm_start_value_and_grad_factory=partial(oracle.warm_start_value_and_grad, "smo"),
+            box_bounds=(-1.0, 1.0) if SMO_STABLE_BOX_RESIDUAL else None,
         )
 
         x_final = x_tensor.detach().clone()

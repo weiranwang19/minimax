@@ -443,6 +443,7 @@ def optimize_bilevel_constrained_smo(
     warm_start_linear_minimizer=None,
     saddle_gradient_factory=None,
     warm_start_value_and_grad_factory=None,
+    box_bounds=None,
 ):
     """
     Algorithm 1 for the constrained bilevel reformulation in the sigma = 0 case.
@@ -454,6 +455,9 @@ def optimize_bilevel_constrained_smo(
     Optional saddle_gradient_factory(rho, mu, lambda_k) returns the two saddle
     gradient callbacks. warm_start_value_and_grad_factory(x_vals, rho, mu,
     lambda_k) returns the AGD callback. lambda_k is fixed during each solve.
+    Optional box_bounds=(lo, hi) enables the stable box residual at every
+    stage. All primal and auxiliary proximal operators must project onto
+    that same box. None retains the generic proximal residual.
     """
     if epsilon <= 0:
         raise ValueError(f"Invalid epsilon: {epsilon}")
@@ -604,6 +608,7 @@ def optimize_bilevel_constrained_smo(
             progress_callback=progress_callback,
             gradient_func=gradient_func,
             gradient_difference_func=gradient_difference_func,
+            box_bounds=box_bounds,
         )
 
         z_state = clone_vals(z_params)

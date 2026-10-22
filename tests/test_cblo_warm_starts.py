@@ -232,8 +232,8 @@ class CBLODiagnosticsTests(unittest.TestCase):
         self.assertAlmostEqual(gap, 0.0, places=12)
 
     def test_experiments_seed_once_and_log_without_external_wandb(self):
-        for method in ('fop', 'smo', 'gcmo'):
-            with self.subTest(method=method):
+        for method, smo_stable in ((m, s) for m in ('fop', 'smo', 'gcmo') for s in (False, True)):
+            with self.subTest(method=method, smo_stable=smo_stable):
                 cblo.generate_instance((2, 3, 1), 2)
                 seed = cblo.Y_HAT.clone()
                 wandb = FakeWandb()
@@ -250,6 +250,9 @@ class CBLODiagnosticsTests(unittest.TestCase):
                     self.assertFalse(any(v.requires_grad for v in min_block+max_block))
                     self.assertTrue(callable(kwargs['gradient_func']))
                     self.assertTrue(callable(kwargs['gradient_difference_func']))
+                    stable = ((method == 'fop' and cblo.FOP_STABLE_BOX_RESIDUAL)
+                              or (method == 'smo' and smo_stable))
+                    self.assertEqual(kwargs.get('box_bounds'), (-1., 1.) if stable else None)
                     for step in (0, 1):
                         if step:
                             with torch.no_grad():
@@ -268,6 +271,7 @@ class CBLODiagnosticsTests(unittest.TestCase):
                     SOLVER_METHOD=method, VERBOSE=False, FINAL_EPS=2.0, MAX_OUTER_ITERS=1,
                     BASE_RHO=2.0, SMO_EPS=0.5, SMO_EPSILON_0=0.5, GCMO_EPS=0.5,
                     GCMO_LAGRANGE_BOUND=3.0, FEAS_TOL=1e6, LOWER_GAP_TOL=1e6,
+                    SMO_STABLE_BOX_RESIDUAL=smo_stable,
                 )
                 with contextlib.ExitStack() as stack:
                     for key, value in settings.items():
@@ -284,6 +288,7 @@ class CBLODiagnosticsTests(unittest.TestCase):
                 torch.testing.assert_close(cblo.Y_HAT, seed)
                 self.assertAlmostEqual(result['initial_objective'], (cblo.D @ seed).item())
                 self.assertEqual(wandb.config['gradient_backend'], 'explicit')
+                self.assertEqual(wandb.config['smo_stable_box_residual'], smo_stable)
                 self.assertNotIn('fop_explicit_gradients', wandb.config)
                 for name in ('fop_agd_max_iters', 'smo_agd_max_iters', 'gcmo_agd_max_iters'):
                     self.assertIsNone(wandb.config[name])
