@@ -72,6 +72,7 @@ def _certificate_stats(values, phi_func, avg_gradient, avg_offset, linear_minimi
 
 
 def _agd_certified(init_vals, phi_func, prox_func, L_grad_phi, epsilon, max_iter, linear_minimizer):
+    """Algorithm 2 of SMO for the convex composite lower warm-start subproblem, with a certificate of optimality."""
     x_k = clone_vals(init_vals)
     z_k = clone_vals(init_vals)
     _require_finite(x_k, "initial iterate")

@@ -20,20 +20,22 @@ torch.set_default_dtype(torch.float64)
 
 # Section 4.2 / Table 2 experiment controls. `PROBLEM_SIZES` is the actual grid of (n, m, l) values; the rest are algorithmic parameters that can be tuned for better performance.
 # PROBLEM_SIZES = [(100 * k, 100 * k, 5 * k) for k in range(1,4)]
-PROBLEM_SIZES = [(100, 100, 5)]
+PROBLEM_SIZES = [(400, 400, 20)]
 # Zero-based instance indices. Edit this list to rerun only failed/interrupted instances
 # while keeping the exact same sampled instance for each (n, m, l) across methods.
-NUM_INSTANCES = list(range(5))
+# NUM_INSTANCES = list(range(5))
 NUM_INSTANCES = [1]
 SOLVER_METHOD = "fop"
 # FOP
-BASE_RHO = 5.0
+BASE_RHO = 5
 FINAL_EPS = 1e-2
 MAX_OUTER_ITERS = 200
 ALG4_MAX_ITERS = 1000
 FOP_LIP_SCALE = 0.1
 # None runs AGD until certified; a nonnegative integer caps its updates.
 FOP_AGD_MAX_ITERS = None
+FOP_STABLE_BOX_RESIDUAL = True
+FOP_EXPLICIT_GRADIENTS = True
 
 # SMO
 SMO_EPS = 1e-2
@@ -218,6 +220,8 @@ def init_instance_run(problem_size, instance_idx, instance_position, num_instanc
         "alg4_max_iters": ALG4_MAX_ITERS,
         "fop_lip_scale": FOP_LIP_SCALE,
         "fop_agd_max_iters": FOP_AGD_MAX_ITERS,
+        "fop_stable_box_residual": FOP_STABLE_BOX_RESIDUAL,
+        "fop_explicit_gradients": FOP_EXPLICIT_GRADIENTS,
         "smo_eps": SMO_EPS,
         "smo_epsilon_0": SMO_EPSILON_0,
         "smo_tau": SMO_TAU,
@@ -353,6 +357,44 @@ def lower_smooth(x_params, z_params):
 def lower_constraints(x_params, z_params):
     """Lower-level linear constraint map A x + B z - b."""
     return A_MAT @ x_params[0] + B_MAT @ z_params[0] - B_VEC
+
+
+def make_fop_gradients(rho, mu):
+    """Explicit gradients for this linear experiment's FOP saddle objective.
+
+    Min block is [x, y], max block is [z]. NCWC supplies its own quadratic
+    regularization. Capture the current instance so later global changes
+    cannot change an already-created oracle.
+    """
+    a, b, rhs, c, d, d_tilde = A_MAT, B_MAT, B_VEC, C, D, D_TILDE
+    at, bt = a.T, b.T
+    penalty_scale = 2.0 * rho * mu
+    lower_gradient = rho * d_tilde
+
+    def residuals(min_vals, max_vals):
+        x, y = min_vals
+        z, = max_vals
+        ax_minus_b = a @ x - rhs
+        return positive_part(ax_minus_b + b @ y), positive_part(ax_minus_b + b @ z)
+
+    @torch.no_grad()
+    def gradient(min_vals, max_vals):
+        ry, rz = residuals(min_vals, max_vals)
+        return ([c + penalty_scale * (at @ (ry-rz)),
+                 d + lower_gradient + penalty_scale * (bt @ ry)],
+                [-lower_gradient - penalty_scale * (bt @ rz)])
+
+    @torch.no_grad()
+    def difference(old_min, old_max, new_min, new_max):
+        old_ry, old_rz = residuals(old_min, old_max)
+        new_ry, new_rz = residuals(new_min, new_max)
+        # New-minus-old directly: c, d and rho*d_tilde cancel algebraically,
+        # instead of subtracting full gradients with large common terms.
+        dry, drz = new_ry-old_ry, new_rz-old_rz
+        return ([penalty_scale * (at @ (dry-drz)), penalty_scale * (bt @ dry)],
+                [-penalty_scale * (bt @ drz)])
+
+    return gradient, difference
 
 
 def upper_objective(x_vec, y_vec):
@@ -680,6 +722,8 @@ def run_single_instance_fop(instance_idx, problem_size, instance_position, num_i
             log_every=SOLVER_LOG_EVERY,
             outer_desc=f"Instance {instance_label}",
             lip_scale=FOP_LIP_SCALE,
+            saddle_gradient_factory=make_fop_gradients if FOP_EXPLICIT_GRADIENTS else None,
+            box_bounds=(-1.0, 1.0) if FOP_STABLE_BOX_RESIDUAL else None,
         )
 
         final_metrics = solver_result["final_metrics"]

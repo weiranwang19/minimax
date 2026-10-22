@@ -1,0 +1,253 @@
+{
+  "environment": {
+    "python": "3.10.20",
+    "python_executable": "/data/scratch/yshen48/conda-envs/minimax/bin/python",
+    "torch": "2.11.0+cu130",
+    "platform": "Linux-6.8.0-147-generic-x86_64-with-glibc2.39",
+    "cpu": "Intel(R) Xeon(R) Gold 6438Y+",
+    "threads": 1,
+    "dtype": "float64"
+  },
+  "timestamp_utc": "2026-10-22T16:58:33.282826+00:00",
+  "instance_sha256": "d27330042df86d6af314a52df9e795f9997b32ebe4722a1770fa729a0cdae998",
+  "results": {
+    "baseline": {
+      "warmup": {
+        "seconds": 4.475169997000194,
+        "status": "terminated",
+        "num_outer_iters": 24,
+        "num_inner_iters": 5033,
+        "final_delta": 6.727926785428413e-07,
+        "terminated": true,
+        "common_stable_residual": 6.727614122516406e-07,
+        "box_kkt_residual": 6.727920726615086e-07
+      },
+      "trials": [
+        {
+          "seconds": 4.10747957500007,
+          "status": "terminated",
+          "num_outer_iters": 24,
+          "num_inner_iters": 5033,
+          "final_delta": 6.727926785428413e-07,
+          "terminated": true,
+          "common_stable_residual": 6.727614122516406e-07,
+          "box_kkt_residual": 6.727920726615086e-07,
+          "solution_linf_difference": 0.0
+        },
+        {
+          "seconds": 4.076777659000072,
+          "status": "terminated",
+          "num_outer_iters": 24,
+          "num_inner_iters": 5033,
+          "final_delta": 6.727926785428413e-07,
+          "terminated": true,
+          "common_stable_residual": 6.727614122516406e-07,
+          "box_kkt_residual": 6.727920726615086e-07,
+          "solution_linf_difference": 0.0
+        },
+        {
+          "seconds": 4.100928810999903,
+          "status": "terminated",
+          "num_outer_iters": 24,
+          "num_inner_iters": 5033,
+          "final_delta": 6.727926785428413e-07,
+          "terminated": true,
+          "common_stable_residual": 6.727614122516406e-07,
+          "box_kkt_residual": 6.727920726615086e-07,
+          "solution_linf_difference": 0.0
+        }
+      ],
+      "microbench": {
+        "gradient_us": 271.9912150041637,
+        "residual_us": 321.17775499955314
+      }
+    },
+    "residual_only": {
+      "warmup": {
+        "seconds": 4.081559532000028,
+        "status": "terminated",
+        "num_outer_iters": 24,
+        "num_inner_iters": 5033,
+        "final_delta": 6.727920724978693e-07,
+        "terminated": true,
+        "common_stable_residual": 6.727614122516406e-07,
+        "box_kkt_residual": 6.727920726615086e-07
+      },
+      "trials": [
+        {
+          "seconds": 4.089901173000726,
+          "status": "terminated",
+          "num_outer_iters": 24,
+          "num_inner_iters": 5033,
+          "final_delta": 6.727920724978693e-07,
+          "terminated": true,
+          "common_stable_residual": 6.727614122516406e-07,
+          "box_kkt_residual": 6.727920726615086e-07,
+          "solution_linf_difference": 0.0
+        },
+        {
+          "seconds": 4.077030785999341,
+          "status": "terminated",
+          "num_outer_iters": 24,
+          "num_inner_iters": 5033,
+          "final_delta": 6.727920724978693e-07,
+          "terminated": true,
+          "common_stable_residual": 6.727614122516406e-07,
+          "box_kkt_residual": 6.727920726615086e-07,
+          "solution_linf_difference": 0.0
+        },
+        {
+          "seconds": 4.088843579999775,
+          "status": "terminated",
+          "num_outer_iters": 24,
+          "num_inner_iters": 5033,
+          "final_delta": 6.727920724978693e-07,
+          "terminated": true,
+          "common_stable_residual": 6.727614122516406e-07,
+          "box_kkt_residual": 6.727920726615086e-07,
+          "solution_linf_difference": 0.0
+        }
+      ],
+      "microbench": {
+        "gradient_us": 271.2291350007945,
+        "residual_us": 331.90204000220547
+      }
+    },
+    "gradients_only": {
+      "warmup": {
+        "seconds": 1.6816080380003768,
+        "status": "terminated",
+        "num_outer_iters": 24,
+        "num_inner_iters": 5033,
+        "final_delta": 6.727926813551247e-07,
+        "terminated": true,
+        "common_stable_residual": 6.727614058560974e-07,
+        "box_kkt_residual": 6.727920661842326e-07
+      },
+      "trials": [
+        {
+          "seconds": 1.805011512999954,
+          "status": "terminated",
+          "num_outer_iters": 24,
+          "num_inner_iters": 5033,
+          "final_delta": 6.727926813551247e-07,
+          "terminated": true,
+          "common_stable_residual": 6.727614058560974e-07,
+          "box_kkt_residual": 6.727920661842326e-07,
+          "solution_linf_difference": 6.3178628995075314e-15
+        },
+        {
+          "seconds": 1.8010697300005631,
+          "status": "terminated",
+          "num_outer_iters": 24,
+          "num_inner_iters": 5033,
+          "final_delta": 6.727926813551247e-07,
+          "terminated": true,
+          "common_stable_residual": 6.727614058560974e-07,
+          "box_kkt_residual": 6.727920661842326e-07,
+          "solution_linf_difference": 6.3178628995075314e-15
+        },
+        {
+          "seconds": 1.8052663110001959,
+          "status": "terminated",
+          "num_outer_iters": 24,
+          "num_inner_iters": 5033,
+          "final_delta": 6.727926813551247e-07,
+          "terminated": true,
+          "common_stable_residual": 6.727614058560974e-07,
+          "box_kkt_residual": 6.727920661842326e-07,
+          "solution_linf_difference": 6.3178628995075314e-15
+        }
+      ],
+      "microbench": {
+        "gradient_us": 56.51519499679125,
+        "residual_us": 101.77029499573109
+      }
+    },
+    "combined": {
+      "warmup": {
+        "seconds": 1.7960450499995204,
+        "status": "terminated",
+        "num_outer_iters": 24,
+        "num_inner_iters": 5033,
+        "final_delta": 6.72792066262095e-07,
+        "terminated": true,
+        "common_stable_residual": 6.727614058560974e-07,
+        "box_kkt_residual": 6.727920661842326e-07
+      },
+      "trials": [
+        {
+          "seconds": 1.8036522499996863,
+          "status": "terminated",
+          "num_outer_iters": 24,
+          "num_inner_iters": 5033,
+          "final_delta": 6.72792066262095e-07,
+          "terminated": true,
+          "common_stable_residual": 6.727614058560974e-07,
+          "box_kkt_residual": 6.727920661842326e-07,
+          "solution_linf_difference": 6.3178628995075314e-15
+        },
+        {
+          "seconds": 1.8088735749997795,
+          "status": "terminated",
+          "num_outer_iters": 24,
+          "num_inner_iters": 5033,
+          "final_delta": 6.72792066262095e-07,
+          "terminated": true,
+          "common_stable_residual": 6.727614058560974e-07,
+          "box_kkt_residual": 6.727920661842326e-07,
+          "solution_linf_difference": 6.3178628995075314e-15
+        },
+        {
+          "seconds": 1.80678559900025,
+          "status": "terminated",
+          "num_outer_iters": 24,
+          "num_inner_iters": 5033,
+          "final_delta": 6.72792066262095e-07,
+          "terminated": true,
+          "common_stable_residual": 6.727614058560974e-07,
+          "box_kkt_residual": 6.727920661842326e-07,
+          "solution_linf_difference": 6.3178628995075314e-15
+        }
+      ],
+      "microbench": {
+        "gradient_us": 56.54526999933296,
+        "residual_us": 109.76616500101954
+      }
+    }
+  },
+  "high_penalty_checks": [
+    {
+      "rho": 25.0,
+      "dtype": "torch.float32",
+      "zeta_hat": 2.2755550701037816e-11,
+      "original_unit_gradient_residual": 0.0,
+      "stable_unit_gradient_residual": 1.0,
+      "reference": 1.0
+    },
+    {
+      "rho": 25.0,
+      "dtype": "torch.float64",
+      "zeta_hat": 2.2755550701037816e-11,
+      "original_unit_gradient_residual": 1.000001076699464,
+      "stable_unit_gradient_residual": 1.0,
+      "reference": 1.0
+    },
+    {
+      "rho": 125.0,
+      "dtype": "torch.float32",
+      "zeta_hat": 2.9127111101169064e-16,
+      "original_unit_gradient_residual": 0.0,
+      "stable_unit_gradient_residual": 1.0,
+      "reference": 1.0
+    },
+    {
+      "rho": 125.0,
+      "dtype": "torch.float64",
+      "zeta_hat": 2.9127111101169064e-16,
+      "original_unit_gradient_residual": 0.9529120659863484,
+      "stable_unit_gradient_residual": 1.0,
+      "reference": 1.0
+    }
+  ]
+}

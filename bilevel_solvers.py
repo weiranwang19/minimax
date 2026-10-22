@@ -99,6 +99,8 @@ def optimize_bilevel_constrained_fop(
     metrics_func=None,
     progress_callback=None,
     lip_scale=None,
+    saddle_gradient_factory=None,
+    box_bounds=None,
 ):
     """
     Algorithm 4 for the constrained penalty reformulation.
@@ -110,6 +112,10 @@ def optimize_bilevel_constrained_fop(
     as computed_lip_h.
 
     h_alg4 computes the smooth part.
+    An optional saddle_gradient_factory(rho, mu) returns gradient and
+    new-minus-old gradient-difference callbacks for h_alg4, with min block
+    params_x + params_y and max block z. box_bounds explicitly declares
+    that both blocks' prox operators project onto the same scalar box.
     """
     # if epsilon <= 0 or epsilon > 0.25:
     #     raise ValueError(f"Algorithm 4 requires epsilon in (0, 1/4], got {epsilon}")
@@ -164,6 +170,10 @@ def optimize_bilevel_constrained_fop(
     lip_override = None if lip_scale is None else lip_scale * rho * mu
     lip_h = computed_lip_h if lip_override is None else lip_override
 
+    gradient_func = gradient_difference_func = None
+    if saddle_gradient_factory is not None:
+        gradient_func, gradient_difference_func = saddle_gradient_factory(rho, mu)
+
     solver_stats = optimize_NCWC(
         params_hat,
         z_params,
@@ -181,6 +191,9 @@ def optimize_bilevel_constrained_fop(
         objective_func=ncwc_objective,
         metrics_func=ncwc_metrics,
         progress_callback=progress_callback,
+        gradient_func=gradient_func,
+        gradient_difference_func=gradient_difference_func,
+        box_bounds=box_bounds,
     )
 
     return {
@@ -228,6 +241,8 @@ def optimize_bilevel_contrained_fop_practical(
     outer_desc=None,
     lip_scale=None,
     warm_start_linear_minimizer=None,
+    saddle_gradient_factory=None,
+    box_bounds=None,
 ):
     """
     Practical outer-loop wrapper for FOP that warm-starts each stage and
@@ -333,6 +348,8 @@ def optimize_bilevel_contrained_fop_practical(
             metrics_func=metrics_func,
             progress_callback=progress_callback,
             lip_scale=lip_scale,
+            saddle_gradient_factory=saddle_gradient_factory,
+            box_bounds=box_bounds,
         )
         assign_vals(params_x, x_stage)
         assign_vals(params_y, y_stage)
