@@ -12,6 +12,7 @@ tests/*
 !tests/test_cblo_warm_starts.py
 !tests/test_fop_numerics.py
 !tests/test_cblo_gradients.py
+!tests/test_scsc_certificate.py
 svm/__pycache__/
 
 tea_debug.log

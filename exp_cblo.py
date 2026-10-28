@@ -31,8 +31,8 @@ SOLVER_METHOD = "fop"
 BASE_RHO = 5
 FINAL_EPS = 1e-2
 MAX_OUTER_ITERS = 200
-ALG4_MAX_ITERS = 1000
-FOP_LIP_SCALE = 0.1
+ALG4_MAX_ITERS = 100000
+FOP_LIP_SCALE = None
 # None runs AGD until certified; a nonnegative integer caps its updates.
 FOP_AGD_MAX_ITERS = None
 FOP_STABLE_BOX_RESIDUAL = True
@@ -41,14 +41,14 @@ FOP_STABLE_BOX_RESIDUAL = True
 SMO_EPS = 1e-2
 SMO_EPSILON_0 = 1.0
 SMO_TAU = 0.8
-SMO_SUBPROBLEM_MAX_ITERS = 200
-SMO_LIP_SCALE = 0.1
+SMO_SUBPROBLEM_MAX_ITERS = 100000
+SMO_LIP_SCALE = None
 SMO_AGD_MAX_ITERS = None
 SMO_STABLE_BOX_RESIDUAL = True
 
 # GCMO
 GCMO_EPS = 1e-2
-GCMO_MAX_ITERS = 200
+GCMO_MAX_ITERS = 100000
 GCMO_LAGRANGE_BOUND = 200
 GCMO_LIP_OVERRIDE = None
 # None runs until certified; 0 evaluates the seed without AGD updates.
@@ -1147,6 +1147,7 @@ def run_single_instance_gcmo(instance_idx, problem_size, instance_position, num_
             lagrange_bound=GCMO_LAGRANGE_BOUND,
             prox_x=prox_box,
             prox_y1=prox_box,
+            box_bounds=(-1.0, 1.0),
             D_y=d_y,
             L_grad_f1=0.0,
             L_grad_ftilde1=0.0,

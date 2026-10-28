@@ -252,7 +252,12 @@ class CBLODiagnosticsTests(unittest.TestCase):
                     self.assertTrue(callable(kwargs['gradient_difference_func']))
                     stable = ((method == 'fop' and cblo.FOP_STABLE_BOX_RESIDUAL)
                               or (method == 'smo' and smo_stable))
-                    self.assertEqual(kwargs.get('box_bounds'), (-1., 1.) if stable else None)
+                    expected_bounds = (-1., 1.) if stable else None
+                    if method == 'gcmo':
+                        dual_bounds = (0., cblo.GCMO_LAGRANGE_BOUND)
+                        expected_bounds = {'min': [(-1., 1.), (-1., 1.), dual_bounds],
+                                           'max': [(-1., 1.), dual_bounds]}
+                    self.assertEqual(kwargs.get('box_bounds'), expected_bounds)
                     for step in (0, 1):
                         if step:
                             with torch.no_grad():

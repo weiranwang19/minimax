@@ -160,25 +160,30 @@ class LinearOracleTests(unittest.TestCase):
 
 
 class SolverIntegrationTests(unittest.TestCase):
-    def test_all_wrappers_run_without_autograd_and_assign_projected_outputs(self):
-        for method, bounds_options in (
+    def test_all_wrappers_certify_and_assign_outputs_with_both_gradient_paths(self):
+        for (method, bounds_options), explicit in itertools.product((
             ('fop', {'box_bounds': (-1., 1.)}),
             ('smo', {'box_bounds': (-1., 1.)}),
-            ('smo', {}),  # Generic callers omit bounds and retain the old residual.
+            ('smo', {}),  # Certification also works without declared boxes.
+            ('gcmo', {'box_bounds': (-1., 1.)}),
             ('gcmo', {}),
-        ):
-            with self.subTest(method=method, bounds_options=bounds_options):
+        ), (False, True)):
+            with self.subTest(method=method, bounds_options=bounds_options, explicit=explicit):
                 cblo.generate_instance((2, 3, 2), 1)
                 oracle = cblo.LinearCBLOOracle.from_current_instance()
-                x, y = torch.zeros(2), cblo.Y_HAT.clone()
+                x, y = torch.zeros(2, requires_grad=not explicit), cblo.Y_HAT.clone().requires_grad_(not explicit)
                 observed, warm_stats, factory_args = [], [], []
                 original_run = minimax.Minimax_SCSC.run
 
                 def run(solver):
-                    self.assertIsNotNone(solver.gradient_func)
-                    self.assertIsNotNone(solver.gradient_difference_func)
-                    self.assertEqual(solver.box_bounds, bounds_options.get('box_bounds'))
-                    self.assertFalse(any(v.requires_grad for v in solver.get_x()+solver.get_y()))
+                    self.assertEqual(solver.gradient_func is not None, explicit)
+                    self.assertEqual(solver.gradient_difference_func is not None, explicit)
+                    expected_bounds = bounds_options.get('box_bounds')
+                    if method == 'gcmo' and expected_bounds is not None:
+                        expected_bounds = {'min': [(-1., 1.), (-1., 1.), (0., 3.)],
+                                           'max': [(-1., 1.), (0., 3.)]}
+                    self.assertEqual(solver.box_bounds, expected_bounds)
+                    self.assertTrue(all(v.requires_grad == (not explicit) for v in solver.get_x()+solver.get_y()))
                     assignments = {}
                     assign_x, assign_y = solver.assign_x, solver.assign_y
 
@@ -196,11 +201,24 @@ class SolverIntegrationTests(unittest.TestCase):
                         stats = original_run(solver)
                     for got, want in zip(solver.get_x()+solver.get_y(), assignments['x']+assignments['y']):
                         torch.testing.assert_close(got, want)
+                    self.assertIn(stats['termination_reason'], ('inner_certificate', 'outer_certificate', 'max_iter'))
+                    if stats['terminated']:
+                        self.assertLessEqual(stats['final_delta'], solver.tau)
+                        gx, gy = solver.compute_h_bar_gradient(solver.get_x(), solver.get_y())
+                        residuals = []
+                        for values, gradients in ((solver.get_x(), gx), (solver.get_y(), [-g for g in gy])):
+                            for i, (v, g) in enumerate(zip(values, gradients)):
+                                lo, hi = (0., 3.) if method == 'gcmo' and i == len(values)-1 else (-1., 1.)
+                                r = g.clone()
+                                r[(v == lo) & (g >= 0)] = 0
+                                r[(v == hi) & (g <= 0)] = 0
+                                residuals.append(r.flatten())
+                        self.assertLessEqual(torch.linalg.vector_norm(torch.cat(residuals)).item(), solver.tau)
                     observed.append((clone_vals(solver.get_x()), clone_vals(solver.get_y())))
                     return stats
 
                 def warm(*args, **kwargs):
-                    self.assertIsNotNone(kwargs['value_and_grad_func'])
+                    self.assertEqual(kwargs['value_and_grad_func'] is not None, explicit)
                     values, stats = agd_convex(*args, **kwargs)
                     warm_stats.append(stats)
                     return values, stats
@@ -215,11 +233,11 @@ class SolverIntegrationTests(unittest.TestCase):
                     D_y=4., L_grad_f1=10., L_grad_ftilde1=0., L_grad_gtilde=0.,
                     L_gtilde=cblo.CURRENT_L_G, gtilde_hi=cblo.compute_gtilde_hi(),
                     warm_start_linear_minimizer=cblo.box_linear_minimizer,
-                    saddle_gradient_factory=saddle_factory,
-                    warm_start_value_and_grad_factory=partial(oracle.warm_start_value_and_grad, method),
+                    saddle_gradient_factory=saddle_factory if explicit else None,
+                    warm_start_value_and_grad_factory=partial(oracle.warm_start_value_and_grad, method) if explicit else None,
                     **bounds_options,
                 )
-                with forbid_autograd(), mock.patch.object(minimax.Minimax_SCSC, 'run', run), mock.patch.object(
+                with (forbid_autograd() if explicit else contextlib.nullcontext()), mock.patch.object(minimax.Minimax_SCSC, 'run', run), mock.patch.object(
                     solvers, 'agd_convex', side_effect=warm,
                 ), contextlib.redirect_stdout(io.StringIO()):
                     if method == 'fop':
@@ -240,7 +258,7 @@ class SolverIntegrationTests(unittest.TestCase):
                 self.assertTrue(observed)
                 self.assertTrue(all(s['num_iters'] > 0 and s['terminated'] for s in warm_stats))
                 self.assertEqual(len(warm_stats), 1 if method == 'gcmo' else 2)
-                if method != 'gcmo':
+                if method != 'gcmo' and explicit:
                     self.assertNotEqual(factory_args[0][0], factory_args[1][0])
                 mins, maxs = observed[-1]
                 torch.testing.assert_close(x, mins[0])

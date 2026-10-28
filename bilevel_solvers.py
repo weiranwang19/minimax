@@ -2,7 +2,7 @@ import math
 import torch
 import tqdm
 from utils import clone_vals, assign_vals
-from minimax import optimize_NCWC
+from minimax import optimize_NCWC, _validate_box_bound_pair
 from agd import agd_convex
 
 
@@ -698,6 +698,7 @@ def optimize_bilevel_constrained_minimax(
         warm_start_callback=None,
         saddle_gradient_factory=None,
         warm_start_value_and_grad_factory=None,
+        box_bounds=None,
 ):
     """
     Our proposed method for the constrained penalty reformulation.
@@ -707,6 +708,10 @@ def optimize_bilevel_constrained_minimax(
     (x, y1, y2) and max blocks (z1, z2). Optional
     warm_start_value_and_grad_factory(x_vals, rho, warm_mu) supplies AGD's
     callback. Absent factories preserve the generic autograd path.
+    Optional box_bounds=(lo, hi) declares shared primal projection bounds
+    for x, y1 and z1; multiplier bounds [0, lagrange_bound] are appended
+    separately for the SCSC certificates. Without metadata the always-active
+    inner certificate uses the proximal subgradients instead.
     When warm_start_lower is enabled, initialize the lower primal-dual block
     with AGD on a smooth quadratic-penalty lower subproblem.
 
@@ -723,6 +728,8 @@ def optimize_bilevel_constrained_minimax(
     if D_y <= 0:
         raise ValueError(f"Invalid D_y: {D_y}")
     lip_override = _validate_lip_override(lip_override)
+    if box_bounds is not None:
+        box_bounds = _validate_box_bound_pair(box_bounds)
     if warm_start_max_iter is not None and warm_start_max_iter < 0:
         raise ValueError(f"Invalid warm_start_max_iter: {warm_start_max_iter}")
     if warm_start_D_y is not None and warm_start_D_y <= 0:
@@ -870,6 +877,13 @@ def optimize_bilevel_constrained_minimax(
     gradient_func = gradient_difference_func = None
     if saddle_gradient_factory is not None:
         gradient_func, gradient_difference_func = saddle_gradient_factory(rho)
+    ncwc_box_bounds = None
+    if box_bounds is not None:
+        dual_bounds = (0.0, float(lagrange_bound))
+        ncwc_box_bounds = {
+            "min": [box_bounds] * (len(params_x) + len(params_y1)) + [dual_bounds],
+            "max": [box_bounds] * len(params_z1) + [dual_bounds],
+        }
     solver_stats = optimize_NCWC(
         params_x + params_y1 + params_y2,
         params_z1 + params_z2,
@@ -889,6 +903,7 @@ def optimize_bilevel_constrained_minimax(
         progress_callback=progress_callback,
         gradient_func=gradient_func,
         gradient_difference_func=gradient_difference_func,
+        box_bounds=ncwc_box_bounds,
     )
 
     return {

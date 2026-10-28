@@ -1,0 +1,21 @@
+{
+  "method": "smo",
+  "inner": {
+    "generic_certificate": 0.0,
+    "stable_certificate": 4.4609844613592366e-13,
+    "projected_point_kkt": 4.4609844613592366e-13,
+    "max_infeasibility": 0.0
+  },
+  "outer_original": {
+    "generic_certificate": 3.197497350658193e-11,
+    "stable_certificate": 1.1921762790146315e-10,
+    "projected_point_kkt": 1.192176925850538e-10,
+    "max_infeasibility": 0.0
+  },
+  "outer_simplified": {
+    "generic_certificate": 3.1974968979481306e-11,
+    "stable_certificate": 1.192179726192096e-10,
+    "projected_point_kkt": 1.192179720160848e-10,
+    "max_infeasibility": 0.0
+  }
+}

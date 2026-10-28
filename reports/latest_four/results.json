@@ -1,0 +1,357 @@
+[
+  {
+    "run": "run-20261023_131107-iq2p8fl4",
+    "method": "fop",
+    "size": {
+      "l": 20,
+      "m": 400,
+      "n": 400
+    },
+    "active_stage": 3,
+    "active_ncwc_call": 4,
+    "runtime": 37195.520064127,
+    "epsilon": 0.04,
+    "rho": 25,
+    "mu": 625,
+    "lip": 6359.383308946415,
+    "completed": 5532,
+    "tau": 5.7845263919016633e-08,
+    "step": 0.00047058378298952473,
+    "step_target": 1.572479517932493e-06,
+    "step_ratio": 299.2622655004445,
+    "condition_bound": 38156300.85367848,
+    "original_stationarity_upper_bounds": {
+      "min": 5.985245367854155,
+      "max": 0.02000005784526392,
+      "joint": 5.9852787834597505
+    },
+    "first_blockwise_bound_success": null,
+    "first_joint_bound_success": null,
+    "total_completed_scsc": 8088,
+    "inner_certificate_returns": 8088,
+    "failed_scsc": 0,
+    "inner_progress_lines": 0,
+    "interrupted": true,
+    "last_certificate": [
+      353583,
+      "Minimax_SCSC outer=58 inner_t=0 delta=4.011e-08 tau=5.785e-08 termination_reason=inner_certificate"
+    ],
+    "last_ncwc": [
+      353584,
+      "optimize_NCWC outer=5531 epsilon_k=5.785e-08 exit_criteria_gap=4.690e-04 inner_terminated=True"
+    ],
+    "last_scsc": [
+      353632,
+      "Minimax_SCSC outer=47 inner_t=257 delta=1.740e-03 tau=5.783e-08"
+    ],
+    "last_metrics": {
+      "ncwc/cumulative_scsc_inner_iters": 83174516,
+      "ncwc/feas": 0.002505327429354157,
+      "ncwc/lower_gap": 0.06745783948724987,
+      "ncwc/completed_outer_iters": 5532,
+      "ncwc/scsc_inner_iters": 14635,
+      "ncwc/upper_obj": -599.157442466518,
+      "ncwc/call_index": 4,
+      "ncwc/final_diff": 0.00047058378298952473,
+      "ncwc/inner_terminated": 1
+    },
+    "last100": {
+      "upper_obj": {
+        "first": -598.8353871965128,
+        "last": -599.157442466518,
+        "min": -599.157442466518,
+        "max": -598.8353871965128
+      },
+      "final_diff": {
+        "first": 0.00048664897702062245,
+        "last": 0.00047058378298952473,
+        "min": 0.00047058378298952473,
+        "max": 0.00048664897702062245
+      },
+      "feas": {
+        "first": 0.002483716947412761,
+        "last": 0.002505327429354157,
+        "min": 0.002483716947412761,
+        "max": 0.0025065088273497843
+      },
+      "lower_gap": {
+        "first": 0.06638054147666786,
+        "last": 0.06745783948724987,
+        "min": 0.06638054147666786,
+        "max": 0.06745783948724987
+      }
+    },
+    "mean_objective_change_per_iteration": -0.0032530835354059994,
+    "linear_face_descent_prediction": -0.0028165593801042946
+  },
+  {
+    "run": "run-20261023_131044-rgavkjk8",
+    "method": "gcmo",
+    "size": {
+      "l": 5,
+      "m": 100,
+      "n": 100
+    },
+    "active_stage": 0,
+    "active_ncwc_call": 1,
+    "runtime": 37205.184051598,
+    "epsilon": 0.01,
+    "rho": 100.0,
+    "mu": null,
+    "lip": 32.161804792697154,
+    "completed": 3547,
+    "tau": 2.81928390188892e-07,
+    "step": 0.000460153836265267,
+    "step_target": 7.77319561546392e-05,
+    "step_ratio": 5.919751142629698,
+    "condition_bound": 8638544.422632055,
+    "original_stationarity_upper_bounds": {
+      "min": 0.029599037641538678,
+      "max": 0.005000281928390189,
+      "joint": 0.030018425153039076
+    },
+    "first_blockwise_bound_success": null,
+    "first_joint_bound_success": null,
+    "total_completed_scsc": 3547,
+    "inner_certificate_returns": 3547,
+    "failed_scsc": 0,
+    "inner_progress_lines": 0,
+    "interrupted": true,
+    "last_certificate": [
+      250914,
+      "Minimax_SCSC outer=76 inner_t=51 delta=2.812e-07 tau=2.819e-07 termination_reason=inner_certificate"
+    ],
+    "last_ncwc": [
+      250915,
+      "optimize_NCWC outer=3546 epsilon_k=2.819e-07 exit_criteria_gap=3.824e-04 inner_terminated=True"
+    ],
+    "last_scsc": [
+      250975,
+      "Minimax_SCSC outer=59 inner_t=274 delta=5.514e-04 tau=2.818e-07"
+    ],
+    "last_metrics": {
+      "ncwc/final_diff": 0.000460153836265267,
+      "ncwc/cumulative_scsc_inner_iters": 61837935,
+      "ncwc/feas": 1.2211219363366528e-08,
+      "ncwc/primal_dual_gap": 5.024994063239016e-06,
+      "ncwc/completed_outer_iters": 3547,
+      "ncwc/scsc_inner_iters": 19454,
+      "ncwc/inner_terminated": 1,
+      "ncwc/upper_obj": -141.6271114529255,
+      "ncwc/lower_gap": 2.937015289306011e-08,
+      "ncwc/call_index": 1
+    },
+    "last100": {
+      "upper_obj": {
+        "first": -141.62576316508324,
+        "last": -141.6271114529255,
+        "min": -141.6271114529255,
+        "max": -141.62576316508324
+      },
+      "final_diff": {
+        "first": 0.0004601537723098122,
+        "last": 0.000460153836265267,
+        "min": 0.0004601537505545991,
+        "max": 0.000460153836265267
+      },
+      "feas": {
+        "first": 1.2116445488615085e-08,
+        "last": 1.2211219363366528e-08,
+        "min": 1.2088250162727279e-08,
+        "max": 1.2218027360403896e-08
+      },
+      "lower_gap": {
+        "first": 3.22409806075008e-08,
+        "last": 2.937015289306011e-08,
+        "min": 2.9328902279024405e-08,
+        "max": 3.228074711703055e-08
+      }
+    },
+    "mean_objective_change_per_iteration": -1.3619069113759117e-05,
+    "linear_face_descent_prediction": -1.3619980990083766e-05
+  },
+  {
+    "run": "run-20261023_131037-22bvabs6",
+    "method": "smo",
+    "size": {
+      "l": 5,
+      "m": 100,
+      "n": 100
+    },
+    "active_stage": 14,
+    "active_ncwc_call": 15,
+    "runtime": 37214.466426024,
+    "epsilon": 0.043980465111040035,
+    "rho": 22.737367544323188,
+    "mu": 11754.943508222847,
+    "lip": 607.9549151389817,
+    "completed": 4353,
+    "tau": 4.6594095115211834e-08,
+    "step": 2.4774284416630953e-05,
+    "step_target": 1.8085413908112686e-05,
+    "step_ratio": 1.3698489037907946,
+    "condition_bound": 1658796.3227071408,
+    "original_stationarity_upper_bounds": {
+      "min": 0.030123342554378856,
+      "max": 0.021990279149615134,
+      "joint": 0.03729595344975712
+    },
+    "first_blockwise_bound_success": {
+      "completed": 1151,
+      "runtime": 24779.28262133,
+      "min_bound": 0.04387224536492165,
+      "max_bound": 0.021990408771068268,
+      "joint_bound": 0.0490749629778624,
+      "subsequent_runtime": 12435.183804694003
+    },
+    "first_joint_bound_success": {
+      "completed": 1244,
+      "runtime": 25078.560368799,
+      "min_bound": 0.038086520087434086,
+      "max_bound": 0.02199039559739786,
+      "joint_bound": 0.043979091747108366,
+      "subsequent_runtime": 12135.906057225002
+    },
+    "total_completed_scsc": 12273,
+    "inner_certificate_returns": 12273,
+    "failed_scsc": 0,
+    "inner_progress_lines": 0,
+    "interrupted": true,
+    "last_certificate": [
+      361627,
+      "Minimax_SCSC outer=38 inner_t=0 delta=2.154e-08 tau=4.659e-08 termination_reason=inner_certificate"
+    ],
+    "last_ncwc": [
+      361628,
+      "optimize_NCWC outer=4352 epsilon_k=4.659e-08 exit_criteria_gap=6.689e-06 inner_terminated=True"
+    ],
+    "last_scsc": [
+      361629,
+      "Minimax_SCSC outer=0 inner_t=205 delta=3.616e-02 tau=4.658e-08"
+    ],
+    "last_metrics": {
+      "ncwc/upper_obj": -141.63612471340593,
+      "ncwc/completed_outer_iters": 4353,
+      "ncwc/inner_terminated": 1,
+      "ncwc/cumulative_scsc_inner_iters": 84868868,
+      "ncwc/feas": 0.0014898643503145222,
+      "ncwc/lower_gap": -0.0010378949986159652,
+      "ncwc/call_index": 15,
+      "ncwc/scsc_inner_iters": 9589,
+      "ncwc/final_diff": 2.4774284416630953e-05
+    },
+    "last100": {
+      "upper_obj": {
+        "first": -141.63605110076367,
+        "last": -141.63612471340593,
+        "min": -141.63612471340593,
+        "max": -141.63605110076367
+      },
+      "final_diff": {
+        "first": 2.477425983326112e-05,
+        "last": 2.4774284416630953e-05,
+        "min": 2.477425983326112e-05,
+        "max": 2.4774284416630953e-05
+      },
+      "feas": {
+        "first": 0.0014898639073812623,
+        "last": 0.0014898643503145222,
+        "min": 0.0014898639073812623,
+        "max": 0.0014898643503145222
+      },
+      "lower_gap": {
+        "first": -0.0010378647700149124,
+        "last": -0.0010378949986159652,
+        "min": -0.0010378949986159652,
+        "max": -0.0010378647700149124
+      }
+    },
+    "mean_objective_change_per_iteration": -7.435620431112851e-07,
+    "linear_face_descent_prediction": -7.462831016864196e-07
+  },
+  {
+    "run": "run-20261023_131011-o3ce2psl",
+    "method": "fop",
+    "size": {
+      "l": 5,
+      "m": 100,
+      "n": 100
+    },
+    "active_stage": 3,
+    "active_ncwc_call": 4,
+    "runtime": 37107.851119785,
+    "epsilon": 0.04,
+    "rho": 25,
+    "mu": 625,
+    "lip": 1616.2213867555586,
+    "completed": 1035,
+    "tau": 3.091787439613527e-07,
+    "step": 0.0004790709540426774,
+    "step_target": 6.187271175809793e-06,
+    "step_ratio": 77.42847216971646,
+    "condition_bound": 4848665.160266676,
+    "original_stationarity_upper_bounds": {
+      "min": 1.548569752573073,
+      "max": 0.02000030917874396,
+      "joint": 1.548698902611955
+    },
+    "first_blockwise_bound_success": null,
+    "first_joint_bound_success": null,
+    "total_completed_scsc": 1347,
+    "inner_certificate_returns": 1347,
+    "failed_scsc": 0,
+    "inner_progress_lines": 0,
+    "interrupted": true,
+    "last_certificate": [
+      324125,
+      "Minimax_SCSC outer=926 inner_t=182 delta=3.090e-07 tau=3.092e-07 termination_reason=inner_certificate"
+    ],
+    "last_ncwc": [
+      324126,
+      "optimize_NCWC outer=1034 epsilon_k=3.092e-07 exit_criteria_gap=4.729e-04 inner_terminated=True"
+    ],
+    "last_scsc": [
+      324967,
+      "Minimax_SCSC outer=840 inner_t=279 delta=1.185e+07 tau=3.089e-07"
+    ],
+    "last_metrics": {
+      "ncwc/completed_outer_iters": 1035,
+      "ncwc/scsc_inner_iters": 255588,
+      "ncwc/final_diff": 0.0004790709540426774,
+      "ncwc/inner_terminated": 1,
+      "ncwc/cumulative_scsc_inner_iters": 88026444,
+      "ncwc/upper_obj": -140.1096277098747,
+      "ncwc/feas": 0.0019103778864435165,
+      "ncwc/lower_gap": -0.00472358878071788,
+      "ncwc/call_index": 4
+    },
+    "last100": {
+      "upper_obj": {
+        "first": -140.03021388359872,
+        "last": -140.1096277098747,
+        "min": -140.1096277098747,
+        "max": -140.03021388359872
+      },
+      "final_diff": {
+        "first": 0.0005134983266504706,
+        "last": 0.0004790709540426774,
+        "min": 0.0004790709540426774,
+        "max": 0.0005134983266504706
+      },
+      "feas": {
+        "first": 0.0018805802711608617,
+        "last": 0.0019103778864435165,
+        "min": 0.001879725485679553,
+        "max": 0.001916962052413547
+      },
+      "lower_gap": {
+        "first": -0.004595358489872567,
+        "last": -0.00472358878071788,
+        "min": -0.00472358878071788,
+        "max": -0.004592019581447601
+      }
+    },
+    "mean_objective_change_per_iteration": -0.0008021598613735515,
+    "linear_face_descent_prediction": -0.0007418746406482591
+  }
+]
