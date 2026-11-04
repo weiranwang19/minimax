@@ -206,6 +206,41 @@ class FakeWandb:
 
 
 class CBLODiagnosticsTests(unittest.TestCase):
+    def test_ncwc_logs_certificates_with_separate_inner_and_outer_status(self):
+        run = FakeRun()
+        cblo._configure_run_metrics(run)
+        callback = cblo.build_ncwc_progress_logger(run, {
+            'base_scsc_inner_iters': 0, 'ncwc_call_index': 0,
+        })
+        start = dict(completed_outer_iters=0, call_cumulative_scsc_inner_iters=0,
+                     scsc_num_inner_iters=0, final_diff=None, inner_terminated=False,
+                     ncwc_terminated=False, objective=None, epsilon=.1, epsilon_k=None,
+                     final_residual_min=None, final_residual_max=None, residual_type=None,
+                     termination_reason=None, scsc_final_delta=None, scsc_termination_reason=None)
+        callback(start)
+        callback({**start, 'completed_outer_iters': 1, 'call_cumulative_scsc_inner_iters': 7,
+                  'scsc_num_inner_iters': 7, 'inner_terminated': True, 'epsilon_k': .001,
+                  'final_residual_min': .2, 'final_residual_max': .01, 'residual_type': 'box_kkt',
+                  'scsc_final_delta': .0005, 'scsc_termination_reason': 'inner_certificate'})
+        callback({**start, 'completed_outer_iters': 2, 'call_cumulative_scsc_inner_iters': 12,
+                  'scsc_num_inner_iters': 5, 'inner_terminated': True, 'ncwc_terminated': True,
+                  'epsilon_k': .0005, 'final_residual_min': .08, 'final_residual_max': .01,
+                  'residual_type': 'box_kkt', 'termination_reason': 'direct_certificate',
+                  'scsc_final_delta': .0001, 'scsc_termination_reason': 'outer_certificate'})
+        self.assertNotIn('ncwc/final_residual_min', run.rows[0])
+        self.assertEqual(run.rows[1]['ncwc/inner_terminated'], 1.)
+        self.assertEqual(run.rows[1]['ncwc/terminated'], 0.)
+        final = run.rows[-1]
+        self.assertEqual(final['ncwc/cumulative_scsc_inner_iters'], 12)
+        self.assertEqual(final['ncwc/terminated'], 1.)
+        for key, expected in {'epsilon': .1, 'epsilon_k': .0005,
+                              'final_residual_min': .08, 'final_residual_max': .01,
+                              'residual_type': 'box_kkt', 'termination_reason': 'direct_certificate',
+                              'scsc_final_delta': .0001, 'scsc_termination_reason': 'outer_certificate'}.items():
+            self.assertEqual(final[f'ncwc/{key}'], expected)
+            self.assertEqual(run.definitions[f'ncwc/{key}']['step_metric'],
+                             'ncwc/cumulative_scsc_inner_iters')
+
     def test_analytic_gap_matches_independent_box_lps(self):
         cblo.generate_instance((2, 3, 2), 0)
         rng = np.random.default_rng(21)

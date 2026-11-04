@@ -58,9 +58,9 @@ def _box_stationarity_residual(values, gradients, bounds, maximize=False):
     residual = []
     for value, gradient, (lo, hi) in zip(values, gradients, bounds):
         if not torch.all(torch.isfinite(value)) or not torch.all(torch.isfinite(gradient)):
-            raise RuntimeError("Minimax_SCSC encountered non-finite inner certificate values")
+            raise RuntimeError("Box stationarity certificate encountered non-finite values")
         if torch.any((value < lo) | (value > hi)):
-            raise RuntimeError("Minimax_SCSC inner candidate is outside declared box_bounds")
+            raise RuntimeError("Box stationarity candidate is outside declared box_bounds")
         g = -gradient if maximize else gradient
         residual.append(torch.where(value == lo, g.clamp_max(0),
                                     torch.where(value == hi, g.clamp_min(0), g)))
@@ -340,7 +340,7 @@ class Minimax_SCSC(Optimizer):
                     raise RuntimeError(
                         f"Minimax_SCSC encountered non-finite inner stationarity delta at outer={k}, inner={t}"
                     )
-                # The following is therefore a heuristic
+                # The following condition is therefore a heuristic
                 if inner_delta <= self.tau:
                     self.assign_x(x_k_t)
                     self.assign_y(y_k_t)
@@ -522,6 +522,34 @@ def _evaluate_metrics(metrics_func, params_x, params_y):
     return normalized
 
 
+def _ncwc_objective_gradient(h_func, gradient_func, params_x, params_y):
+    """Differentiate the original objective at the current NCWC endpoint.
+
+    Autograd must not overwrite the SCSC gradient buffers or permanently
+    change parameter flags. Unused parameters have zero smooth gradients.
+    """
+    if gradient_func is not None:
+        with torch.no_grad():
+            return _validate_gradient_result(
+                gradient_func(params_x, params_y), params_x, params_y,
+            )
+    params = params_x + params_y
+    flags = [p.requires_grad for p in params]
+    try:
+        with torch.enable_grad():
+            for p in params:
+                p.requires_grad_(True)
+            loss = torch.as_tensor(h_func())
+            gradients = (torch.autograd.grad(loss, params, allow_unused=True)
+                         if loss.requires_grad else [None] * len(params))
+            gradients = [torch.zeros_like(p) if g is None else g.detach()
+                         for p, g in zip(params, gradients)]
+        return gradients[:len(params_x)], gradients[len(params_x):]
+    finally:
+        for p, flag in zip(params, flags):
+            p.requires_grad_(flag)
+
+
 class SAPD_SCSC(Optimizer):
     """
     Algorithm 1 of SAPD+:
@@ -681,6 +709,12 @@ def optimize_NCWC(
     Optional callbacks describe h_func BEFORE regularization. They use the
     same tensor-list contract as Minimax_SCSC; only deterministic mode
     supports explicit gradients and declared box projections.
+
+    Deterministic convergence requires a successful SCSC certificate followed
+    by stationarity of the original objective, with each block norm <= epsilon.
+    Declared boxes give direct KKT residuals; otherwise final_residual_min/max
+    are certified upper bounds obtained by removing the regularizers. The
+    previous step threshold remains a diagnostic and the stochastic exit rule.
     """
     if lip_h <= 0:
         raise ValueError(f"Invalid lip_h: {lip_h}")
@@ -714,6 +748,7 @@ def optimize_NCWC(
 
     params_x = list(params_x)
     params_y = list(params_y)
+    min_bounds, max_bounds = _normalize_box_bounds(box_bounds, len(params_x), len(params_y))
     x_k = clone_vals(params_x)
     y_0 = clone_vals(params_y)
     inner_max_iter = max_iter if subproblem_max_iter is None else subproblem_max_iter
@@ -721,14 +756,21 @@ def optimize_NCWC(
     num_outer_iters = 0
     num_inner_iters = 0
     final_diff = None
+    final_residual_min = final_residual_max = None
+    residual_type = termination_reason = None
     terminated = False
 
     if progress_callback is not None:
         progress_callback(
             {
                 "completed_outer_iters": 0,
+                "epsilon": epsilon,
                 "epsilon_k": None,
                 "final_diff": None,
+                "final_residual_min": None,
+                "final_residual_max": None,
+                "residual_type": None,
+                "termination_reason": None,
                 "terminated": False,
                 "inner_terminated": False,
                 "ncwc_terminated": False,
@@ -805,14 +847,60 @@ def optimize_NCWC(
         num_outer_iters = k + 1
         num_inner_iters += solver_stats["num_inner_iters"]
         exit_criteria_gap = diff - epsilon / (4 * lip_h)
-        ncwc_terminated = exit_criteria_gap <= 0
+        final_residual_min = final_residual_max = None
+        residual_type = termination_reason = None
+        ncwc_terminated = False
+        if sub_routine == 'deterministic':
+            inner_delta = solver_stats.get("final_delta")
+            inner_certified = (
+                solver_stats["terminated"] and inner_delta is not None
+                and math.isfinite(inner_delta) and 0 <= inner_delta <= epsilon_k
+            )
+            if inner_certified:
+                with torch.no_grad():
+                    if min_bounds is not None:
+                        gx, gy = _ncwc_objective_gradient(h_func, gradient_func, params_x, params_y)
+                        final_residual_min = float(compute_norm(_box_stationarity_residual(
+                            params_x, gx, min_bounds,
+                        )).item())
+                        final_residual_max = float(compute_norm(_box_stationarity_residual(
+                            params_y, gy, max_bounds, maximize=True,
+                        )).item())
+                        residual_type = "box_kkt"
+                    else:
+                        # Removing the regularizers gives valid residual vectors
+                        # with these bounds, using the prescribed inner accuracy.
+                        max_displacement = float(compute_norm(
+                            add_vals(params_y, scale_vals(y_0, -1)),
+                        ).item())
+                        final_residual_min = epsilon_k + 2 * lip_h * final_diff
+                        final_residual_max = epsilon_k + sigma_y * max_displacement
+                        residual_type = "bound"
+                ncwc_terminated = (
+                    math.isfinite(final_residual_min) and math.isfinite(final_residual_max)
+                    and max(final_residual_min, final_residual_max) <= epsilon
+                )
+                if ncwc_terminated:
+                    termination_reason = ("direct_certificate" if residual_type == "box_kkt"
+                                          else "bound_certificate")
+        else:
+            ncwc_terminated = bool(exit_criteria_gap <= 0)
+            if ncwc_terminated:
+                termination_reason = "step_threshold"
+        if not ncwc_terminated and num_outer_iters == max_iter:
+            termination_reason = "max_iter"
 
         if progress_callback is not None:
             progress_callback(
                 {
                     "completed_outer_iters": num_outer_iters,
+                    "epsilon": epsilon,
                     "epsilon_k": epsilon_k,
                     "final_diff": final_diff,
+                    "final_residual_min": final_residual_min,
+                    "final_residual_max": final_residual_max,
+                    "residual_type": residual_type,
+                    "termination_reason": termination_reason,
                     "terminated": solver_stats["terminated"],
                     "inner_terminated": solver_stats["terminated"],
                     "ncwc_terminated": ncwc_terminated,
@@ -827,11 +915,13 @@ def optimize_NCWC(
             )
 
         if verbose and (
-            k % log_every == 0 or final_diff <= epsilon / (4 * lip_h) or num_outer_iters == max_iter
+            k % log_every == 0 or ncwc_terminated or num_outer_iters == max_iter
         ):
             print(
                 f"optimize_NCWC outer={k} epsilon_k={epsilon_k:.3e} exit_criteria_gap={exit_criteria_gap:.3e} "
-                f"inner_terminated={solver_stats['terminated']}",
+                f"inner_terminated={solver_stats['terminated']} ncwc_terminated={ncwc_terminated} "
+                f"residual_min={final_residual_min} residual_max={final_residual_max} "
+                f"residual_type={residual_type} termination_reason={termination_reason}",
                 flush=True,
             )
 
@@ -841,11 +931,13 @@ def optimize_NCWC(
 
         x_k = x_kp1
 
-    # TODO: add metrics here and stop early.
-
     return {
         "num_outer_iters": num_outer_iters,
         "num_inner_iters": num_inner_iters,
         "final_diff": final_diff,
+        "final_residual_min": final_residual_min,
+        "final_residual_max": final_residual_max,
+        "residual_type": residual_type,
+        "termination_reason": termination_reason,
         "terminated": terminated,
     }

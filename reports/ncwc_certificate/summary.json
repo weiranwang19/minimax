@@ -1,0 +1,775 @@
+{
+  "verification": {
+    "accepted_smo_stages": 145,
+    "worst_accepted_block_ratio": 0.9988227309959253,
+    "worst_accepted_joint_ratio": 0.9988399122850649
+  },
+  "historical": {
+    "run": "run-20261023_131037-22bvabs6",
+    "stage": 14,
+    "epsilon": 0.043980465111040035,
+    "lip": 607.9549151389817,
+    "first_bound_iteration": 1151,
+    "later_iterations": 3202,
+    "later_recorded_hours": 3.454217723526112,
+    "final_step": 2.4774284416630953e-05,
+    "old_threshold": 1.8085413908112686e-05,
+    "improved_threshold": 3.617078949587138e-05,
+    "final_min_bound": 0.030123342554378856,
+    "final_max_bound": 0.021990279149615134
+  },
+  "stage8_baseline_reference": {
+    "source": "run-20261023_131037-22bvabs6",
+    "matched_replay_iterations": 298,
+    "ncwc_iterations": 424,
+    "scsc_inner": 809631,
+    "final_metrics": {
+      "ncwc/cumulative_scsc_inner_iters": 809631,
+      "ncwc/call_index": 9,
+      "ncwc/completed_outer_iters": 264,
+      "ncwc/scsc_inner_iters": 3347,
+      "_timestamp": 1792779386.7702203,
+      "_step": 441,
+      "ncwc/upper_obj": -142.62186177707912,
+      "ncwc/feas": 0.03333135671800391,
+      "ncwc/lower_gap": 0.11909178941240672,
+      "ncwc/final_diff": 0.0038278072506873076,
+      "ncwc/inner_terminated": 1,
+      "_runtime": 348.744783621
+    }
+  },
+  "experiments": [
+    {
+      "file": "smo-100-100-5-idx1-eps0.2-baseline.json",
+      "config": {
+        "kind": "smo",
+        "case": "linear",
+        "rule": "baseline",
+        "size": [
+          100,
+          100,
+          5
+        ],
+        "index": 1,
+        "epsilon": 0.2,
+        "seconds": 180
+      },
+      "status": "incomplete",
+      "error": "180 second experiment budget exceeded",
+      "summary": {
+        "ncwc_iterations": 298,
+        "scsc_inner": 417113,
+        "scsc_outer": 2022,
+        "completed_calls": 8
+      },
+      "seconds": 180.00034804304596,
+      "last_stage": {
+        "stage": 7,
+        "epsilon": 0.2097152000000001,
+        "upper": -143.01150164929183,
+        "feas": 0.06005712265787957,
+        "lower_gap": 0.1575240202927909,
+        "ncwc": 68,
+        "scsc_inner": 86792,
+        "lambda_norm": 11.215248587812011,
+        "next_lambda_norm": 14.004856730937341,
+        "certificate": {
+          "iteration": 68,
+          "epsilon": 0.2097152000000001,
+          "tau": 0.00014809345456239946,
+          "lip": 5.6073943639613075,
+          "step": 0.009188849437554695,
+          "threshold": 0.0093499398467423,
+          "step_ratio": 0.9827709683882371,
+          "r_min": 0.09941844299675041,
+          "r_max": 0.001829136773129651,
+          "r_joint": 0.09943526813577226,
+          "bound_min": 0.10319909854942885,
+          "bound_max": 0.10500569345456245,
+          "baseline_pass": true,
+          "bound_pass": true,
+          "direct_pass": true,
+          "scsc_delta": 0.00014797716271528196,
+          "scsc_outer": 10,
+          "scsc_inner": 2049,
+          "stop": true,
+          "autograd_min": 0.09941844299675039,
+          "autograd_max": 0.0018291367731295893
+        }
+      },
+      "worst_accepted_block_ratio": 0.5238821225317868,
+      "worst_accepted_joint_ratio": 0.5352905972694747
+    },
+    {
+      "file": "smo-100-100-5-idx1-eps0.2-bound.json",
+      "config": {
+        "kind": "smo",
+        "case": "linear",
+        "rule": "bound",
+        "size": [
+          100,
+          100,
+          5
+        ],
+        "index": 1,
+        "epsilon": 0.2,
+        "seconds": 180
+      },
+      "status": "complete",
+      "error": null,
+      "summary": {
+        "ncwc_iterations": 174,
+        "scsc_inner": 235815,
+        "scsc_outer": 1169,
+        "completed_calls": 9
+      },
+      "seconds": 101.49463672796264,
+      "last_stage": {
+        "stage": 8,
+        "epsilon": 0.1677721600000001,
+        "upper": -142.64864795964692,
+        "feas": 0.03644636700842526,
+        "lower_gap": 0.13451388726032132,
+        "ncwc": 59,
+        "scsc_inner": 117572,
+        "lambda_norm": 14.01120634709346,
+        "next_lambda_norm": 17.49584247634248,
+        "certificate": {
+          "iteration": 59,
+          "epsilon": 0.1677721600000001,
+          "tau": 9.770521225481767e-05,
+          "lip": 10.951942117111928,
+          "step": 0.007614184598673778,
+          "threshold": 0.0038297353612256465,
+          "step_ratio": 1.988175129739768,
+          "r_min": 0.16676902651316153,
+          "r_max": 0.0008497329499259478,
+          "r_joint": 0.1667711913078328,
+          "bound_min": 0.16687792319961547,
+          "bound_max": 0.08398378521225486,
+          "baseline_pass": false,
+          "bound_pass": true,
+          "direct_pass": true,
+          "scsc_delta": 9.759644179851732e-05,
+          "scsc_outer": 11,
+          "scsc_inner": 2416,
+          "stop": true,
+          "autograd_min": 0.16676902651316147,
+          "autograd_max": 0.0008497329499258674
+        }
+      },
+      "worst_accepted_block_ratio": 0.9940208584854685,
+      "worst_accepted_joint_ratio": 0.9940337616672081
+    },
+    {
+      "file": "smo-100-100-5-idx1-eps0.2-direct.json",
+      "config": {
+        "kind": "smo",
+        "case": "linear",
+        "rule": "direct",
+        "size": [
+          100,
+          100,
+          5
+        ],
+        "index": 1,
+        "epsilon": 0.2,
+        "seconds": 180
+      },
+      "status": "complete",
+      "error": null,
+      "summary": {
+        "ncwc_iterations": 169,
+        "scsc_inner": 234710,
+        "scsc_outer": 1161,
+        "completed_calls": 9
+      },
+      "seconds": 99.02844064997043,
+      "last_stage": {
+        "stage": 8,
+        "epsilon": 0.1677721600000001,
+        "upper": -142.58334089874694,
+        "feas": 0.03530488760345748,
+        "lower_gap": 0.1280074785134493,
+        "ncwc": 69,
+        "scsc_inner": 144682,
+        "lambda_norm": 14.00756156876111,
+        "next_lambda_norm": 17.496204487501966,
+        "certificate": {
+          "iteration": 69,
+          "epsilon": 0.1677721600000001,
+          "tau": 8.354503656571366e-05,
+          "lip": 10.951942117111928,
+          "step": 0.007650097693229007,
+          "threshold": 0.0038297353612256465,
+          "step_ratio": 1.997552564775837,
+          "r_min": 0.16757464703628544,
+          "r_max": 0.0009828988871237625,
+          "r_joint": 0.16757752957827596,
+          "bound_min": 0.16765039928955686,
+          "bound_max": 0.08396962503656576,
+          "baseline_pass": false,
+          "bound_pass": true,
+          "direct_pass": true,
+          "scsc_delta": 8.340674349856804e-05,
+          "scsc_outer": 11,
+          "scsc_inner": 2486,
+          "stop": true,
+          "autograd_min": 0.16757464703628544,
+          "autograd_max": 0.0009828988871237408
+        }
+      },
+      "worst_accepted_block_ratio": 0.9988227309959253,
+      "worst_accepted_joint_ratio": 0.9988399122850649
+    },
+    {
+      "file": "smo-100-100-5-idx1-eps0.3-baseline.json",
+      "config": {
+        "kind": "smo",
+        "case": "linear",
+        "rule": "baseline",
+        "size": [
+          100,
+          100,
+          5
+        ],
+        "index": 1,
+        "epsilon": 0.3,
+        "seconds": 240
+      },
+      "status": "complete",
+      "error": null,
+      "summary": {
+        "ncwc_iterations": 92,
+        "scsc_inner": 19786,
+        "scsc_outer": 168,
+        "completed_calls": 7
+      },
+      "seconds": 9.244008435984142,
+      "last_stage": {
+        "stage": 6,
+        "epsilon": 0.2621440000000001,
+        "upper": -143.16943389510908,
+        "feas": 0.08034024827866335,
+        "lower_gap": 0.164999085185576,
+        "ncwc": 67,
+        "scsc_inner": 16756,
+        "lambda_norm": 8.972576505910187,
+        "next_lambda_norm": 11.215248587812011,
+        "certificate": {
+          "iteration": 67,
+          "epsilon": 0.2621440000000001,
+          "tau": 0.0002625699409614331,
+          "lip": 2.8709859143481906,
+          "step": 0.019166684940412487,
+          "threshold": 0.02282700157896068,
+          "step_ratio": 0.8396496961772739,
+          "r_min": 0.08045930669099528,
+          "r_max": 0.003521439091087326,
+          "r_joint": 0.08053633072389055,
+          "bound_min": 0.11031713491830912,
+          "bound_max": 0.1313345699409615,
+          "baseline_pass": true,
+          "bound_pass": true,
+          "direct_pass": true,
+          "scsc_delta": 0.00025221897887427186,
+          "scsc_outer": 2,
+          "scsc_inner": 248,
+          "stop": true,
+          "autograd_min": 0.08045930669099528,
+          "autograd_max": 0.003521439091087313
+        }
+      },
+      "worst_accepted_block_ratio": 0.5238821225317868,
+      "worst_accepted_joint_ratio": 0.5352905972694747
+    },
+    {
+      "file": "smo-100-100-5-idx1-eps0.3-bound.json",
+      "config": {
+        "kind": "smo",
+        "case": "linear",
+        "rule": "bound",
+        "size": [
+          100,
+          100,
+          5
+        ],
+        "index": 1,
+        "epsilon": 0.3,
+        "seconds": 240
+      },
+      "status": "complete",
+      "error": null,
+      "summary": {
+        "ncwc_iterations": 35,
+        "scsc_inner": 5998,
+        "scsc_outer": 58,
+        "completed_calls": 7
+      },
+      "seconds": 3.373051728005521,
+      "last_stage": {
+        "stage": 6,
+        "epsilon": 0.2621440000000001,
+        "upper": -143.0179388198718,
+        "feas": 0.09565315392914564,
+        "lower_gap": 0.16208814827069104,
+        "ncwc": 15,
+        "scsc_inner": 3586,
+        "lambda_norm": 8.978079734807698,
+        "next_lambda_norm": 11.20326572295633,
+        "certificate": {
+          "iteration": 15,
+          "epsilon": 0.2621440000000001,
+          "tau": 0.001172812402961068,
+          "lip": 2.8709859143481906,
+          "step": 0.04154556335365941,
+          "threshold": 0.02282700157896068,
+          "step_ratio": 1.8200184202883376,
+          "r_min": 0.23858796363874904,
+          "r_max": 0.0013974044478322382,
+          "r_joint": 0.2385920558871897,
+          "bound_min": 0.23972626678699416,
+          "bound_max": 0.13224481240296113,
+          "baseline_pass": false,
+          "bound_pass": true,
+          "direct_pass": true,
+          "scsc_delta": 0.0010449259248192177,
+          "scsc_outer": 2,
+          "scsc_inner": 255,
+          "stop": true,
+          "autograd_min": 0.23858796363874904,
+          "autograd_max": 0.0013974044478322714
+        }
+      },
+      "worst_accepted_block_ratio": 0.9212340814742481,
+      "worst_accepted_joint_ratio": 0.9228111337711695
+    },
+    {
+      "file": "smo-100-100-5-idx1-eps0.3-direct.json",
+      "config": {
+        "kind": "smo",
+        "case": "linear",
+        "rule": "direct",
+        "size": [
+          100,
+          100,
+          5
+        ],
+        "index": 1,
+        "epsilon": 0.3,
+        "seconds": 240
+      },
+      "status": "complete",
+      "error": null,
+      "summary": {
+        "ncwc_iterations": 36,
+        "scsc_inner": 7336,
+        "scsc_outer": 65,
+        "completed_calls": 7
+      },
+      "seconds": 4.960362594923936,
+      "last_stage": {
+        "stage": 6,
+        "epsilon": 0.2621440000000001,
+        "upper": -142.93320340995237,
+        "feas": 0.08646102736310124,
+        "lower_gap": 0.15718764111378147,
+        "ncwc": 16,
+        "scsc_inner": 4035,
+        "lambda_norm": 8.972054583332921,
+        "next_lambda_norm": 11.207746280678782,
+        "certificate": {
+          "iteration": 16,
+          "epsilon": 0.2621440000000001,
+          "tau": 0.0010995116277760012,
+          "lip": 2.8709859143481906,
+          "step": 0.04470823986393582,
+          "threshold": 0.02282700157896068,
+          "step_ratio": 1.958568220591125,
+          "r_min": 0.24337494116831346,
+          "r_max": 0.0017584411904105,
+          "r_joint": 0.2433812936609964,
+          "bound_min": 0.25781296543709603,
+          "bound_max": 0.13217151162777604,
+          "baseline_pass": false,
+          "bound_pass": true,
+          "direct_pass": true,
+          "scsc_delta": 0.0008791091941607061,
+          "scsc_outer": 2,
+          "scsc_inner": 255,
+          "stop": true,
+          "autograd_min": 0.24337494116831349,
+          "autograd_max": 0.0017584411904104998
+        }
+      },
+      "worst_accepted_block_ratio": 0.9792392335108451,
+      "worst_accepted_joint_ratio": 0.9804993256606035
+    },
+    {
+      "file": "smo-2-3-1-idx1-eps0.01-baseline.json",
+      "config": {
+        "kind": "smo",
+        "case": "linear",
+        "rule": "baseline",
+        "size": [
+          2,
+          3,
+          1
+        ],
+        "index": 1,
+        "epsilon": 0.01,
+        "seconds": 240
+      },
+      "status": "incomplete",
+      "error": "240 second experiment budget exceeded",
+      "summary": {
+        "ncwc_iterations": 735,
+        "scsc_inner": 578263,
+        "scsc_outer": 3386,
+        "completed_calls": 17
+      },
+      "seconds": 240.0005608749343,
+      "last_stage": {
+        "stage": 16,
+        "epsilon": 0.028147497671065627,
+        "upper": -4.966383430392517,
+        "feas": 0.0,
+        "lower_gap": 0.004843913775747835,
+        "ncwc": 33,
+        "scsc_inner": 12289,
+        "lambda_norm": 8.58513914477109,
+        "next_lambda_norm": 10.730639092074727,
+        "certificate": {
+          "iteration": 33,
+          "epsilon": 0.028147497671065627,
+          "tau": 2.013981811795332e-06,
+          "lip": 22.928528999471933,
+          "step": 2.3772048749703956e-05,
+          "threshold": 0.00030690474813837703,
+          "step_ratio": 0.07745741600252345,
+          "r_min": 0.0,
+          "r_max": 7.713809294557676e-06,
+          "r_joint": 7.713809294557676e-06,
+          "bound_min": 0.0010921302000806907,
+          "bound_max": 0.014075762817344609,
+          "baseline_pass": true,
+          "bound_pass": true,
+          "direct_pass": true,
+          "scsc_delta": 2.2908330934640705e-15,
+          "scsc_outer": 1,
+          "scsc_inner": 0,
+          "stop": true,
+          "autograd_min": 0.0,
+          "autograd_max": 7.713809294630038e-06
+        }
+      },
+      "worst_accepted_block_ratio": 0.19244234139249847,
+      "worst_accepted_joint_ratio": 0.19244234139249847
+    },
+    {
+      "file": "smo-2-3-1-idx1-eps0.01-bound.json",
+      "config": {
+        "kind": "smo",
+        "case": "linear",
+        "rule": "bound",
+        "size": [
+          2,
+          3,
+          1
+        ],
+        "index": 1,
+        "epsilon": 0.01,
+        "seconds": 240
+      },
+      "status": "incomplete",
+      "error": "240 second experiment budget exceeded",
+      "summary": {
+        "ncwc_iterations": 574,
+        "scsc_inner": 599535,
+        "scsc_outer": 3372,
+        "completed_calls": 18
+      },
+      "seconds": 240.0005867369473,
+      "last_stage": {
+        "stage": 17,
+        "epsilon": 0.022517998136852502,
+        "upper": -4.96434834256398,
+        "feas": 0.0,
+        "lower_gap": 0.004792983624458761,
+        "ncwc": 2,
+        "scsc_inner": 2396,
+        "lambda_norm": 10.731253301651568,
+        "next_lambda_norm": 13.412518543352455,
+        "certificate": {
+          "iteration": 2,
+          "epsilon": 0.022517998136852502,
+          "tau": 1.9022362599493652e-05,
+          "lip": 44.782283202093616,
+          "step": 0.00015872981371434225,
+          "threshold": 0.00012570818483747924,
+          "step_ratio": 1.2626847958989682,
+          "r_min": 0.014220395110637302,
+          "r_max": 1.4099853281886677e-06,
+          "r_joint": 0.014220395180538968,
+          "bound_min": 0.01423558930334197,
+          "bound_max": 0.011278021431025746,
+          "baseline_pass": false,
+          "bound_pass": true,
+          "direct_pass": true,
+          "scsc_delta": 6.59265198287505e-06,
+          "scsc_outer": 2,
+          "scsc_inner": 258,
+          "stop": true,
+          "autograd_min": 0.014220395110637302,
+          "autograd_max": 1.4099853280439445e-06
+        }
+      },
+      "worst_accepted_block_ratio": 0.9119353891100096,
+      "worst_accepted_joint_ratio": 0.9119821566214379
+    },
+    {
+      "file": "smo-2-3-1-idx1-eps0.01-direct.json",
+      "config": {
+        "kind": "smo",
+        "case": "linear",
+        "rule": "direct",
+        "size": [
+          2,
+          3,
+          1
+        ],
+        "index": 1,
+        "epsilon": 0.01,
+        "seconds": 240
+      },
+      "status": "incomplete",
+      "error": "240 second experiment budget exceeded",
+      "summary": {
+        "ncwc_iterations": 563,
+        "scsc_inner": 587465,
+        "scsc_outer": 3305,
+        "completed_calls": 18
+      },
+      "seconds": 240.00056821492035,
+      "last_stage": {
+        "stage": 17,
+        "epsilon": 0.022517998136852502,
+        "upper": -4.964329243514397,
+        "feas": 0.0,
+        "lower_gap": 0.004792505651237597,
+        "ncwc": 1,
+        "scsc_inner": 2134,
+        "lambda_norm": 10.726172043730847,
+        "next_lambda_norm": 13.415570122267376,
+        "certificate": {
+          "iteration": 1,
+          "epsilon": 0.022517998136852502,
+          "tau": 3.8044725198987304e-05,
+          "lip": 44.782283202093616,
+          "step": 0.0022353667042779683,
+          "threshold": 0.00012570818483747924,
+          "step_ratio": 17.78218902108835,
+          "r_min": 0.014220395110637302,
+          "r_max": 4.1811678216254896e-05,
+          "r_joint": 0.014220456579135303,
+          "bound_min": 0.20024769434821227,
+          "bound_max": 0.011297043793625238,
+          "baseline_pass": false,
+          "bound_pass": false,
+          "direct_pass": true,
+          "scsc_delta": 3.790165095127278e-05,
+          "scsc_outer": 14,
+          "scsc_inner": 2134,
+          "stop": true,
+          "autograd_min": 0.014220395110637302,
+          "autograd_max": 4.18116782164081e-05
+        }
+      },
+      "worst_accepted_block_ratio": 0.9119353891100096,
+      "worst_accepted_joint_ratio": 0.9119821566214379
+    },
+    {
+      "file": "smo-4-4-2-idx1-eps0.05-baseline.json",
+      "config": {
+        "kind": "smo",
+        "case": "linear",
+        "rule": "baseline",
+        "size": [
+          4,
+          4,
+          2
+        ],
+        "index": 1,
+        "epsilon": 0.05,
+        "seconds": 180
+      },
+      "status": "complete",
+      "error": null,
+      "summary": {
+        "ncwc_iterations": 258,
+        "scsc_inner": 159602,
+        "scsc_outer": 982,
+        "completed_calls": 15
+      },
+      "seconds": 68.88754141703248,
+      "last_stage": {
+        "stage": 14,
+        "epsilon": 0.043980465111040035,
+        "upper": -5.90327539178806,
+        "feas": 0.0,
+        "lower_gap": 0.02681292899595957,
+        "ncwc": 124,
+        "scsc_inner": 90642,
+        "lambda_norm": 26.698231476720366,
+        "next_lambda_norm": 33.36588820857677,
+        "certificate": {
+          "iteration": 124,
+          "epsilon": 0.043980465111040035,
+          "tau": 1.63567819384288e-06,
+          "lip": 19.790959157601822,
+          "step": 0.0004691627243965657,
+          "threshold": 0.000555562577346673,
+          "step_ratio": 0.8444822303137357,
+          "r_min": 0.018571598343215492,
+          "r_max": 9.19034978114075e-05,
+          "r_joint": 0.01857182573886139,
+          "bound_min": 0.018571996311797106,
+          "bound_max": 0.02199186823371386,
+          "baseline_pass": true,
+          "bound_pass": true,
+          "direct_pass": true,
+          "scsc_delta": 1.2377097879136617e-06,
+          "scsc_outer": 4,
+          "scsc_inner": 654,
+          "stop": true,
+          "autograd_min": 0.018571598343215312,
+          "autograd_max": 9.190349781151852e-05
+        }
+      },
+      "worst_accepted_block_ratio": 0.42226925741523014,
+      "worst_accepted_joint_ratio": 0.42227442779361296
+    },
+    {
+      "file": "smo-4-4-2-idx1-eps0.05-bound.json",
+      "config": {
+        "kind": "smo",
+        "case": "linear",
+        "rule": "bound",
+        "size": [
+          4,
+          4,
+          2
+        ],
+        "index": 1,
+        "epsilon": 0.05,
+        "seconds": 180
+      },
+      "status": "complete",
+      "error": null,
+      "summary": {
+        "ncwc_iterations": 254,
+        "scsc_inner": 159602,
+        "scsc_outer": 978,
+        "completed_calls": 15
+      },
+      "seconds": 65.50790773890913,
+      "last_stage": {
+        "stage": 14,
+        "epsilon": 0.043980465111040035,
+        "upper": -5.903275391873708,
+        "feas": 0.0,
+        "lower_gap": 0.026812928999887603,
+        "ncwc": 124,
+        "scsc_inner": 90642,
+        "lambda_norm": 26.69823150937746,
+        "next_lambda_norm": 33.36588820626108,
+        "certificate": {
+          "iteration": 124,
+          "epsilon": 0.043980465111040035,
+          "tau": 1.63567819384288e-06,
+          "lip": 19.790959157601822,
+          "step": 0.0004691627238260221,
+          "threshold": 0.000555562577346673,
+          "step_ratio": 0.8444822292867702,
+          "r_min": 0.018571598320634923,
+          "r_max": 9.190345376486331e-05,
+          "r_joint": 0.01857182571606313,
+          "bound_min": 0.018571996289213893,
+          "bound_max": 0.02199186823371386,
+          "baseline_pass": true,
+          "bound_pass": true,
+          "direct_pass": true,
+          "scsc_delta": 1.2377097905585201e-06,
+          "scsc_outer": 4,
+          "scsc_inner": 654,
+          "stop": true,
+          "autograd_min": 0.01857159832063482,
+          "autograd_max": 9.190345376497433e-05
+        }
+      },
+      "worst_accepted_block_ratio": 0.42226925690180916,
+      "worst_accepted_joint_ratio": 0.42227442727524056
+    },
+    {
+      "file": "smo-4-4-2-idx1-eps0.05-direct.json",
+      "config": {
+        "kind": "smo",
+        "case": "linear",
+        "rule": "direct",
+        "size": [
+          4,
+          4,
+          2
+        ],
+        "index": 1,
+        "epsilon": 0.05,
+        "seconds": 180
+      },
+      "status": "complete",
+      "error": null,
+      "summary": {
+        "ncwc_iterations": 248,
+        "scsc_inner": 158703,
+        "scsc_outer": 970,
+        "completed_calls": 15
+      },
+      "seconds": 68.50265786598902,
+      "last_stage": {
+        "stage": 14,
+        "epsilon": 0.043980465111040035,
+        "upper": -5.903560906311946,
+        "feas": 0.0,
+        "lower_gap": 0.02682602321813691,
+        "ncwc": 123,
+        "scsc_inner": 89988,
+        "lambda_norm": 26.698237690919328,
+        "next_lambda_norm": 33.3658872184953,
+        "certificate": {
+          "iteration": 123,
+          "epsilon": 0.043980465111040035,
+          "tau": 1.6489763905407896e-06,
+          "lip": 19.790959157601822,
+          "step": 0.0015832840337130969,
+          "threshold": 0.000555562577346673,
+          "step_ratio": 2.849875240472006,
+          "r_min": 0.020566891959974055,
+          "r_max": 9.188466553444741e-05,
+          "r_joint": 0.02056709721095823,
+          "bound_min": 0.06267106826858848,
+          "bound_max": 0.02199188153191056,
+          "baseline_pass": false,
+          "bound_pass": false,
+          "direct_pass": true,
+          "scsc_delta": 1.0322890717768905e-06,
+          "scsc_outer": 3,
+          "scsc_inner": 366,
+          "stop": true,
+          "autograd_min": 0.020566891959973965,
+          "autograd_max": 9.188466553455843e-05
+        }
+      },
+      "worst_accepted_block_ratio": 0.4676369817383136,
+      "worst_accepted_joint_ratio": 0.4676416486053816
+    }
+  ]
+}

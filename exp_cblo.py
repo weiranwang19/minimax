@@ -21,7 +21,7 @@ torch.set_default_dtype(torch.float64)
 
 # Section 4.2 / Table 2 experiment controls. `PROBLEM_SIZES` is the actual grid of (n, m, l) values; the rest are algorithmic parameters that can be tuned for better performance.
 # PROBLEM_SIZES = [(100 * k, 100 * k, 5 * k) for k in range(1,4)]
-PROBLEM_SIZES = [(400, 400, 20)]
+PROBLEM_SIZES = [(5,5,2)]
 # Zero-based instance indices. Edit this list to rerun only failed/interrupted instances
 # while keeping the exact same sampled instance for each (n, m, l) across methods.
 # NUM_INSTANCES = list(range(5))
@@ -75,6 +75,15 @@ NCWC_HISTORY_METRICS = (
     "ncwc/scsc_inner_iters",
     "ncwc/final_diff",
     "ncwc/inner_terminated",
+    "ncwc/terminated",
+    "ncwc/epsilon",
+    "ncwc/epsilon_k",
+    "ncwc/final_residual_min",
+    "ncwc/final_residual_max",
+    "ncwc/residual_type",
+    "ncwc/termination_reason",
+    "ncwc/scsc_final_delta",
+    "ncwc/scsc_termination_reason",
 )
 FOP_STAGE_METRICS = (
     "fop/stage/rho",
@@ -308,6 +317,13 @@ def build_ncwc_progress_logger(run, ncwc_state):
                 "ncwc/scsc_inner_iters": payload["scsc_num_inner_iters"],
                 "ncwc/final_diff": payload["final_diff"],
                 "ncwc/inner_terminated": float(payload["inner_terminated"]),
+                "ncwc/terminated": (float(payload["ncwc_terminated"])
+                                    if payload.get("ncwc_terminated") is not None else None),
+                **{f"ncwc/{key}": payload.get(key) for key in (
+                    "epsilon", "epsilon_k", "final_residual_min", "final_residual_max",
+                    "residual_type", "termination_reason", "scsc_final_delta",
+                    "scsc_termination_reason",
+                )},
             },
         )
         ncwc_state["base_scsc_inner_iters"] = max(

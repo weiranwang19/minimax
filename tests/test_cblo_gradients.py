@@ -160,6 +160,72 @@ class LinearOracleTests(unittest.TestCase):
 
 
 class SolverIntegrationTests(unittest.TestCase):
+    def test_all_methods_return_original_objective_ncwc_certificates(self):
+        # Inactive constraints and linear objectives give the exact solution
+        # x=y=z=-1, with both GCMO multiplier blocks at zero.
+        for method, explicit in itertools.product(('fop', 'smo', 'gcmo'), (False, True)):
+            with self.subTest(method=method, explicit=explicit):
+                x, y = (torch.zeros(1, requires_grad=not explicit) for _ in range(2))
+                observed = []
+
+                def factory(rho, *unused):
+                    def gradient(u, v):
+                        gx = [torch.ones_like(u[0]), torch.full_like(u[1], 1+.3*rho)]
+                        gy = [torch.full_like(v[0], -.3*rho)]
+                        if method == 'gcmo':
+                            gx.append(torch.full_like(u[2], rho))
+                            gy.append(torch.full_like(v[1], -rho))
+                        return gx, gy
+                    return gradient, lambda a, b, c, d: ([torch.zeros_like(p) for p in c],
+                                                         [torch.zeros_like(p) for p in d])
+
+                def audit(*args, **kwargs):
+                    stats = minimax.optimize_NCWC(*args, **kwargs)
+                    self.assertTrue(stats['terminated'])
+                    self.assertEqual(stats['termination_reason'], 'direct_certificate')
+                    self.assertEqual(stats['residual_type'], 'box_kkt')
+                    self.assertEqual(stats['final_residual_min'], 0.)
+                    self.assertEqual(stats['final_residual_max'], 0.)
+                    mins, maxs = args[:2]
+                    for p in mins[:2]+maxs[:1]:
+                        torch.testing.assert_close(p, -torch.ones_like(p))
+                    if method == 'gcmo':
+                        for p in mins[2:]+maxs[1:]:
+                            torch.testing.assert_close(p, torch.zeros_like(p))
+                    observed.append(stats)
+                    return stats
+
+                kwargs = dict(
+                    upper_smooth=lambda u, v: (u[0]+v[0]).sum(),
+                    lower_smooth=lambda u, v: (.3*v[0]+0*u[0]).sum(),
+                    lower_constraints=lambda u, v: -torch.ones_like(v[0]),
+                    prox_x=cblo.prox_box, D_y=4., L_grad_f1=1., L_grad_ftilde1=0.,
+                    L_grad_gtilde=0., L_gtilde=1., gtilde_hi=1.,
+                    saddle_gradient_factory=factory if explicit else None,
+                    box_bounds=(-1., 1.), epsilon=.5,
+                )
+                # Warm-start autograd is separate from the explicit saddle path.
+                # Its analytic zero-penalty value/gradient avoids that graph too.
+                if method == 'smo':
+                    kwargs['warm_start_value_and_grad_factory'] = lambda *args: (
+                        lambda vals: (torch.zeros((), dtype=vals[0].dtype), [torch.zeros_like(vals[0])]))
+                with mock.patch.object(solvers, 'optimize_NCWC', side_effect=audit), \
+                     (forbid_autograd() if explicit else contextlib.nullcontext()), \
+                     contextlib.redirect_stdout(io.StringIO()):
+                    if method == 'fop':
+                        solvers.optimize_bilevel_constrained_fop([x], [y], prox_y=cblo.prox_box,
+                                                                 max_iter=1000, **kwargs)
+                    elif method == 'smo':
+                        solvers.optimize_bilevel_constrained_smo(
+                            [x], [y], prox_y=cblo.prox_box, epsilon_0=.5,
+                            subproblem_max_iter=1000, warm_start_linear_minimizer=cblo.box_linear_minimizer,
+                            **kwargs)
+                    else:
+                        solvers.optimize_bilevel_constrained_minimax(
+                            [x], [y], prox_y1=cblo.prox_box, lagrange_bound=3.,
+                            max_iter=1000, warm_start_lower=False, **kwargs)
+                self.assertEqual(len(observed), 1)
+
     def test_all_wrappers_certify_and_assign_outputs_with_both_gradient_paths(self):
         for (method, bounds_options), explicit in itertools.product((
             ('fop', {'box_bounds': (-1., 1.)}),
