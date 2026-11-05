@@ -142,7 +142,8 @@ def gcmo_fifth_call():
         raise Finished
 
     with mock.patch.multiple(experiment, WANDB_ENABLED=False, VERBOSE=False, SOLVER_METHOD='gcmo',
-                             GCMO_LIP_OVERRIDE=None, GCMO_MAX_ITERS=100000), \
+                             GCMO_LIP_OVERRIDE=None, GCMO_NCWC_MAX_ITERS=100000,
+                             GCMO_SCSC_MAX_OUTER_ITERS=100000, GCMO_SCSC_MAX_INNER_ITERS=None), \
             mock.patch.object(minimax.Minimax_SCSC, 'run', run):
         experiment.generate_instance((100, 100, 5), 1)
         try:

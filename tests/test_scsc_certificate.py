@@ -94,7 +94,7 @@ class SolverCertificateTests(unittest.TestCase):
                     stats = solver.run()
                 self.assertEqual(stats, dict(num_outer_iters=1, num_inner_iters=0,
                                              final_delta=0., terminated=True,
-                                             termination_reason='inner_certificate'))
+                                             termination_reason='inner_certificate', budget_exhausted=None))
                 self.assertEqual(gradient.call_count, 2 if explicit else 0)
                 self.assertEqual(backward.call_count, 0 if explicit else 2)
                 self.assertEqual(x.item(), -1.)

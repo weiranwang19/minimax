@@ -130,10 +130,11 @@ class NCWCCertificateTests(unittest.TestCase):
                         stats = self.solve(tensor(0.), tensor(0.), lambda: None,
                                            max_iter=2, box_bounds=bounds, gradient_func=gradient,
                                            progress_callback=progress.append)
-                    self.assertEqual(run.call_count, 2)
-                    self.assertEqual(stats['num_inner_iters'], 6)
+                    self.assertEqual(run.call_count, 1)
+                    self.assertEqual(stats['num_inner_iters'], 3)
                     self.assertFalse(stats['terminated'])
-                    self.assertEqual(stats['termination_reason'], 'max_iter')
+                    self.assertEqual(stats['termination_reason'], 'inner_solver_failed')
+                    self.assertEqual(stats['last_scsc_stats'], inner)
                     self.assertIsNone(stats['residual_type'])
                     self.assertIsNone(stats['final_residual_min'])
                     self.assertFalse(progress[-1]['ncwc_terminated'])
@@ -149,7 +150,7 @@ class NCWCCertificateTests(unittest.TestCase):
         self.assertEqual(progress[1]['final_residual_min'], 1.)
         self.assertIsNone(stats['final_residual_min'])
         self.assertIsNone(stats['residual_type'])
-        self.assertEqual(stats['termination_reason'], 'max_iter')
+        self.assertEqual(stats['termination_reason'], 'inner_solver_failed')
 
     def test_generic_prox_bound_matches_analytic_residual(self):
         # Saddle at (1,-2) for .5(x-2)^2-.5(y+3)^2+|x|-|y|.

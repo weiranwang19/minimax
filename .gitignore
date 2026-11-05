@@ -14,6 +14,7 @@ tests/*
 !tests/test_cblo_gradients.py
 !tests/test_scsc_certificate.py
 !tests/test_ncwc_certificate.py
+!tests/test_solver_budgets.py
 svm/__pycache__/
 
 tea_debug.log

@@ -308,7 +308,7 @@ class CBLODiagnosticsTests(unittest.TestCase):
                     return ncwc_stats()
 
                 settings = dict(
-                    SOLVER_METHOD=method, VERBOSE=False, FINAL_EPS=2.0, MAX_OUTER_ITERS=1,
+                    SOLVER_METHOD=method, VERBOSE=False, FINAL_EPS=2.0, FOP_MAX_STAGES=1,
                     BASE_RHO=2.0, SMO_EPS=0.5, SMO_EPSILON_0=0.5, GCMO_EPS=0.5,
                     GCMO_LAGRANGE_BOUND=3.0, FEAS_TOL=1e6, LOWER_GAP_TOL=1e6,
                     SMO_STABLE_BOX_RESIDUAL=smo_stable,

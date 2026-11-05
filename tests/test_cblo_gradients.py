@@ -323,9 +323,13 @@ class SolverIntegrationTests(unittest.TestCase):
                         )
                 self.assertTrue(observed)
                 self.assertTrue(all(s['num_iters'] > 0 and s['terminated'] for s in warm_stats))
-                self.assertEqual(len(warm_stats), 1 if method == 'gcmo' else 2)
+                # The deliberately tiny solve caps now stop the method at the
+                # first unsuccessful stage rather than warming another stage.
+                self.assertEqual(len(warm_stats), 1)
                 if method != 'gcmo' and explicit:
-                    self.assertNotEqual(factory_args[0][0], factory_args[1][0])
+                    self.assertEqual(len(factory_args), 1)
+                self.assertFalse(result['terminated'])
+                self.assertIn(result['budget_exhausted'], ('ncwc', 'scsc_outer'))
                 mins, maxs = observed[-1]
                 torch.testing.assert_close(x, mins[0])
                 torch.testing.assert_close(y, mins[1])

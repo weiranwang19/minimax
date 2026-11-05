@@ -2,7 +2,7 @@ import math
 import torch
 import tqdm
 from utils import clone_vals, assign_vals
-from minimax import optimize_NCWC, _validate_box_bound_pair
+from minimax import optimize_NCWC, _validate_box_bound_pair, _validate_iteration_budget
 from agd import agd_convex
 
 
@@ -76,6 +76,24 @@ def _validate_lip_scale(lip_scale):
     return lip_scale
 
 
+def _validate_solver_budgets(ncwc_max_iter, scsc_max_iter, scsc_max_inner_iter, warm_start_max_iter=None):
+    _validate_iteration_budget(ncwc_max_iter, "NCWC max_iter")
+    _validate_iteration_budget(scsc_max_iter, "scsc_max_iter", allow_none=True)
+    _validate_iteration_budget(scsc_max_inner_iter, "scsc_max_inner_iter", allow_none=True, allow_zero=True)
+    _validate_iteration_budget(warm_start_max_iter, "warm_start_max_iter", allow_none=True, allow_zero=True)
+
+
+def _solver_status(stats):
+    """Propagate NCWC status while supporting older result dictionaries."""
+    return {
+        "terminated": bool(stats["terminated"]),
+        "termination_reason": stats.get("termination_reason") or (
+            "converged" if stats["terminated"] else "inner_solver_failed"
+        ),
+        "budget_exhausted": stats.get("budget_exhausted"),
+    }
+
+
 def optimize_bilevel_constrained_fop(
     params_x,
     params_y,
@@ -101,6 +119,8 @@ def optimize_bilevel_constrained_fop(
     lip_scale=None,
     saddle_gradient_factory=None,
     box_bounds=None,
+    scsc_max_iter=None,
+    scsc_max_inner_iter=None,
 ):
     """
     Algorithm 4 for the constrained penalty reformulation.
@@ -112,11 +132,14 @@ def optimize_bilevel_constrained_fop(
     as computed_lip_h.
 
     h_alg4 computes the smooth part.
+    max_iter limits NCWC steps. scsc_max_iter independently limits SCSC
+    outer steps, and scsc_max_inner_iter optionally limits each inner loop.
     An optional saddle_gradient_factory(rho, mu) returns gradient and
     new-minus-old gradient-difference callbacks for h_alg4, with min block
     params_x + params_y and max block z. box_bounds explicitly declares
     that both blocks' prox operators project onto the same scalar box.
     """
+    _validate_solver_budgets(max_iter, scsc_max_iter, scsc_max_inner_iter)
     # if epsilon <= 0 or epsilon > 0.25:
     #     raise ValueError(f"Algorithm 4 requires epsilon in (0, 1/4], got {epsilon}")
     if D_y <= 0:
@@ -186,6 +209,8 @@ def optimize_bilevel_constrained_fop(
         epsilon_0,
         lr=lr,
         max_iter=max_iter,
+        subproblem_max_iter=scsc_max_iter,
+        subproblem_max_inner_iter=scsc_max_inner_iter,
         verbose=verbose,
         log_every=log_every,
         objective_func=ncwc_objective,
@@ -206,6 +231,7 @@ def optimize_bilevel_constrained_fop(
         "lip_scale": lip_scale,
         "lip_override": lip_override,
         "solver_stats": solver_stats,
+        **_solver_status(solver_stats),
     }
 
 
@@ -244,6 +270,8 @@ def optimize_bilevel_contrained_fop_practical(
     saddle_gradient_factory=None,
     box_bounds=None,
     warm_start_value_and_grad_factory=None,
+    scsc_max_iter=None,
+    scsc_max_inner_iter=None,
 ):
     """
     Practical outer-loop wrapper for FOP that warm-starts each stage and
@@ -251,6 +279,8 @@ def optimize_bilevel_contrained_fop_practical(
     lip_scale across all stages.
     Optional warm_start_value_and_grad_factory(x_vals, rho, mu) supplies an
     AGD value/gradient callback; absent factories preserve autograd.
+    max_outer_iters limits stages, subproblem_max_iter limits NCWC steps
+    per stage, and scsc_max_iter/scsc_max_inner_iter limit the nested solver.
     """
     if base_rho <= 0:
         raise ValueError(f"Invalid base_rho: {base_rho}")
@@ -259,12 +289,8 @@ def optimize_bilevel_contrained_fop_practical(
     if D_y <= 0:
         raise ValueError(f"Invalid D_y: {D_y}")
     lip_scale = _validate_lip_scale(lip_scale)
-    if warm_start_max_iter is not None and warm_start_max_iter < 0:
-        raise ValueError(f"Invalid warm_start_max_iter: {warm_start_max_iter}")
-    if subproblem_max_iter <= 0:
-        raise ValueError(f"Invalid subproblem_max_iter: {subproblem_max_iter}")
-    if max_outer_iters <= 0:
-        raise ValueError(f"Invalid max_outer_iters: {max_outer_iters}")
+    _validate_solver_budgets(subproblem_max_iter, scsc_max_iter, scsc_max_inner_iter, warm_start_max_iter)
+    _validate_iteration_budget(max_outer_iters, "max_outer_iters")
     if log_every <= 0:
         raise ValueError(f"Invalid log_every: {log_every}")
     if evaluate_iterate is not None and not callable(evaluate_iterate):
@@ -287,6 +313,7 @@ def optimize_bilevel_contrained_fop_practical(
     history = []
     final_metrics = None
     terminated = False
+    termination_reason = budget_exhausted = None
     last_solver_result = None
 
     for k in tqdm.trange(
@@ -357,6 +384,8 @@ def optimize_bilevel_contrained_fop_practical(
             lip_scale=lip_scale,
             saddle_gradient_factory=saddle_gradient_factory,
             box_bounds=box_bounds,
+            scsc_max_iter=scsc_max_iter,
+            scsc_max_inner_iter=scsc_max_inner_iter,
         )
         assign_vals(params_x, x_stage)
         assign_vals(params_y, y_stage)
@@ -379,7 +408,14 @@ def optimize_bilevel_contrained_fop_practical(
             "lip_override": last_solver_result["lip_override"],
             "subproblem_stats": last_solver_result["solver_stats"],
             "metrics": metrics,
+            "termination_reason": _solver_status(last_solver_result["solver_stats"])["termination_reason"],
+            "budget_exhausted": last_solver_result["solver_stats"].get("budget_exhausted"),
         }
+        target_met = epsilon_k <= final_epsilon
+        if metrics is not None and feas_tol is not None and lower_gap_tol is not None:
+            target_met = target_met and metrics["feas"] <= feas_tol and metrics["lower_gap"] <= lower_gap_tol
+        if last_solver_result["solver_stats"]["terminated"] and not target_met and k + 1 == max_outer_iters:
+            stage_summary.update(termination_reason="max_stages", budget_exhausted="stages")
         history.append(stage_summary)
 
         if stage_callback is not None:
@@ -391,17 +427,23 @@ def optimize_bilevel_contrained_fop_practical(
                 }
             )
 
-        if metrics is not None and feas_tol is not None and lower_gap_tol is not None:
-            if epsilon_k <= final_epsilon and metrics["feas"] <= feas_tol and metrics["lower_gap"] <= lower_gap_tol:
-                terminated = True
-                break
-        elif epsilon_k <= final_epsilon:
+        if not last_solver_result["solver_stats"]["terminated"]:
+            status = _solver_status(last_solver_result["solver_stats"])
+            termination_reason, budget_exhausted = status["termination_reason"], status["budget_exhausted"]
+            break
+        if target_met:
             terminated = True
             break
 
+    if terminated:
+        termination_reason = "converged"
+    elif termination_reason is None:
+        termination_reason, budget_exhausted = "max_stages", "stages"
     return {
         "num_outer_iters": len(history),
         "terminated": terminated,
+        "termination_reason": termination_reason,
+        "budget_exhausted": budget_exhausted,
         "history": history,
         "final_metrics": final_metrics,
         "last_subproblem": last_solver_result,
@@ -444,6 +486,9 @@ def optimize_bilevel_constrained_smo(
     saddle_gradient_factory=None,
     warm_start_value_and_grad_factory=None,
     box_bounds=None,
+    scsc_max_iter=None,
+    scsc_max_inner_iter=None,
+    max_outer_iters=None,
 ):
     """
     Algorithm 1 for the constrained bilevel reformulation in the sigma = 0 case.
@@ -458,6 +503,8 @@ def optimize_bilevel_constrained_smo(
     Optional box_bounds=(lo, hi) enables the stable box residual at every
     stage. All primal and auxiliary proximal operators must project onto
     that same box. None retains the generic proximal residual.
+    subproblem_max_iter limits NCWC steps per stage. The scsc_* limits
+    independently control SCSC, and max_outer_iters optionally caps stages.
     """
     if epsilon <= 0:
         raise ValueError(f"Invalid epsilon: {epsilon}")
@@ -468,10 +515,8 @@ def optimize_bilevel_constrained_smo(
     if D_y <= 0:
         raise ValueError(f"Invalid D_y: {D_y}")
     lip_scale = _validate_lip_scale(lip_scale)
-    if subproblem_max_iter <= 0:
-        raise ValueError(f"Invalid subproblem_max_iter: {subproblem_max_iter}")
-    if warm_start_max_iter is not None and warm_start_max_iter < 0:
-        raise ValueError(f"Invalid warm_start_max_iter: {warm_start_max_iter}")
+    _validate_solver_budgets(subproblem_max_iter, scsc_max_iter, scsc_max_inner_iter, warm_start_max_iter)
+    _validate_iteration_budget(max_outer_iters, "max_outer_iters", allow_none=True)
     if log_every <= 0:
         raise ValueError(f"Invalid log_every: {log_every}")
     if stage_callback is not None and not callable(stage_callback):
@@ -524,6 +569,8 @@ def optimize_bilevel_constrained_smo(
 
     history = []
     num_outer_iters = 0
+    terminated = False
+    termination_reason = budget_exhausted = None
     epsilon_k = epsilon_0
     ncwc_objective = _adapt_ncwc_objective(objective_func, len(params_x), len(params_y))
     ncwc_metrics = _adapt_ncwc_metrics(metrics_func, len(params_x), len(params_y))
@@ -601,6 +648,8 @@ def optimize_bilevel_constrained_smo(
             epsilon_k,
             subproblem_epsilon_0,
             max_iter=subproblem_max_iter,
+            subproblem_max_iter=scsc_max_iter,
+            subproblem_max_inner_iter=scsc_max_inner_iter,
             verbose=verbose,
             log_every=log_every,
             objective_func=ncwc_objective,
@@ -613,7 +662,8 @@ def optimize_bilevel_constrained_smo(
 
         z_state = clone_vals(z_params)
         with torch.no_grad():
-            lambda_next = _positive_part(lambda_k + mu_k * lower_constraints(params_x, z_state)).detach()
+            lambda_next = (_positive_part(lambda_k + mu_k * lower_constraints(params_x, z_state)).detach()
+                           if subproblem_stats["terminated"] else lambda_k.clone())
         next_lambda_norm = float(torch.linalg.vector_norm(lambda_next).item())
 
         stage_summary = {
@@ -632,7 +682,12 @@ def optimize_bilevel_constrained_smo(
             "lip_override": lip_override,
             "subproblem_stats": subproblem_stats,
             "next_lambda_norm": next_lambda_norm,
+            "termination_reason": _solver_status(subproblem_stats)["termination_reason"],
+            "budget_exhausted": subproblem_stats.get("budget_exhausted"),
         }
+        if (subproblem_stats["terminated"] and epsilon_k > epsilon
+                and max_outer_iters is not None and num_outer_iters + 1 == max_outer_iters):
+            stage_summary.update(termination_reason="max_stages", budget_exhausted="stages")
         history.append(stage_summary)
         if stage_callback is not None:
             stage_callback(
@@ -647,8 +702,17 @@ def optimize_bilevel_constrained_smo(
             )
 
         num_outer_iters += 1
+        if not subproblem_stats["terminated"]:
+            status = _solver_status(subproblem_stats)
+            termination_reason, budget_exhausted = status["termination_reason"], status["budget_exhausted"]
+            break
         lambda_k = lambda_next
         if epsilon_k <= epsilon:
+            terminated = True
+            termination_reason = "converged"
+            break
+        if max_outer_iters is not None and num_outer_iters >= max_outer_iters:
+            termination_reason, budget_exhausted = "max_stages", "stages"
             break
         epsilon_k *= tau
 
@@ -656,7 +720,9 @@ def optimize_bilevel_constrained_smo(
         "z_eps": clone_vals(z_state),
         "lambda": lambda_k.clone().detach(),
         "num_outer_iters": num_outer_iters,
-        "terminated": True,
+        "terminated": terminated,
+        "termination_reason": termination_reason,
+        "budget_exhausted": budget_exhausted,
         "history": history,
         "lip_h": history[-1]["lip_h"],
         "computed_lip_h": history[-1]["computed_lip_h"],
@@ -699,6 +765,8 @@ def optimize_bilevel_constrained_minimax(
         saddle_gradient_factory=None,
         warm_start_value_and_grad_factory=None,
         box_bounds=None,
+        scsc_max_iter=None,
+        scsc_max_inner_iter=None,
 ):
     """
     Our proposed method for the constrained penalty reformulation.
@@ -719,6 +787,8 @@ def optimize_bilevel_constrained_minimax(
     the unscaled lower primal-dual gap. warm_start_callback receives the AGD
     statistics and initial gap before the main solve. Existing metrics_func
     continues to receive only the x and primal y blocks.
+    max_iter limits NCWC steps; scsc_max_iter and scsc_max_inner_iter
+    independently limit the SCSC outer and innermost iterations.
     """
 
     if epsilon <= 0:
@@ -730,8 +800,7 @@ def optimize_bilevel_constrained_minimax(
     lip_override = _validate_lip_override(lip_override)
     if box_bounds is not None:
         box_bounds = _validate_box_bound_pair(box_bounds)
-    if warm_start_max_iter is not None and warm_start_max_iter < 0:
-        raise ValueError(f"Invalid warm_start_max_iter: {warm_start_max_iter}")
+    _validate_solver_budgets(max_iter, scsc_max_iter, scsc_max_inner_iter, warm_start_max_iter)
     if warm_start_D_y is not None and warm_start_D_y <= 0:
         raise ValueError(f"Invalid warm_start_D_y: {warm_start_D_y}")
     if warm_start_epsilon is not None and warm_start_epsilon <= 0:
@@ -896,6 +965,8 @@ def optimize_bilevel_constrained_minimax(
         epsilon_0,
         lr=lr,
         max_iter=max_iter,
+        subproblem_max_iter=scsc_max_iter,
+        subproblem_max_inner_iter=scsc_max_inner_iter,
         verbose=verbose,
         log_every=log_every,
         objective_func=ncwc_objective,
@@ -919,4 +990,5 @@ def optimize_bilevel_constrained_minimax(
         "warm_start_stats": warm_start_stats,
         "initial_primal_dual_gap": initial_primal_dual_gap,
         "solver_stats": solver_stats,
+        **_solver_status(solver_stats),
     }

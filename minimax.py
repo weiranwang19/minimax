@@ -1,9 +1,19 @@
 import math
+from numbers import Integral
 
 import torch, tqdm
 from torch.optim import Optimizer
 
 from utils import clone_vals, zero_vals, scale_vals, add_vals, blend_vals, assign_vals, compute_prox, compute_norm
+
+
+def _validate_iteration_budget(value, name, *, allow_none=False, allow_zero=False):
+    if value is None and allow_none:
+        return
+    minimum = 0 if allow_zero else 1
+    if isinstance(value, bool) or not isinstance(value, Integral) or value < minimum:
+        requirement = "nonnegative" if allow_zero else "positive"
+        raise ValueError(f"{name} must be a {requirement} integer" + (" or None" if allow_none else ""))
 
 
 def _validate_gradient_result(result, min_vals, max_vals):
@@ -120,15 +130,17 @@ class Minimax_SCSC(Optimizer):
     parameter tensor. Callers must ensure their prox operators agree.
     Every feasible inner candidate is checked for stationarity, using box
     normals when declared and the proximal subgradients otherwise.
+    max_iter caps outer iterations. max_inner_iter caps updates separately
+    within each outer iteration; None leaves those updates uncapped.
     """
 
-    def __init__(self, params_x, params_y, h_bar, sigma_x, sigma_y, lip, prox_x, prox_y, tau, lr=1, max_iter=300000, verbose=False, log_every=1, gradient_func=None, gradient_difference_func=None, box_bounds=None):
+    def __init__(self, params_x, params_y, h_bar, sigma_x, sigma_y, lip, prox_x, prox_y, tau, lr=1, max_iter=300000, verbose=False, log_every=1, gradient_func=None, gradient_difference_func=None, box_bounds=None, max_inner_iter=None):
         if lr < 0.0:
             raise ValueError(f"Invalid learning rate: {lr}")
         if tau <= 0.0:
             raise ValueError(f"Invalid tau: {tau}")
-        if max_iter <= 0:
-            raise ValueError(f"Invalid max_iter: {max_iter}")
+        _validate_iteration_budget(max_iter, "max_iter")
+        _validate_iteration_budget(max_inner_iter, "max_inner_iter", allow_none=True, allow_zero=True)
         if log_every <= 0:
             raise ValueError(f"Invalid log_every: {log_every}")
         for callback in (gradient_func, gradient_difference_func):
@@ -153,6 +165,7 @@ class Minimax_SCSC(Optimizer):
         self.lr = lr
         self.tau = tau
         self.max_iter = max_iter
+        self.max_inner_iter = max_inner_iter
         self.prox_x = prox_x
         self.prox_y = prox_y
         self.verbose = verbose
@@ -355,6 +368,7 @@ class Minimax_SCSC(Optimizer):
                         "final_delta": final_delta,
                         "terminated": True,
                         "termination_reason": "inner_certificate",
+                        "budget_exhausted": None,
                     }
 
                 # Line 9: stop the inner loop when the residual inequality holds.
@@ -374,6 +388,23 @@ class Minimax_SCSC(Optimizer):
                     )
                 if lhs <= rhs:
                     break
+
+                if self.max_inner_iter is not None and t >= self.max_inner_iter:
+                    self.assign_x(x_k_t)
+                    self.assign_y(y_k_t)
+                    final_delta = float(inner_delta.item())
+                    self._log(
+                        f"Minimax_SCSC outer={k} inner_t={t} delta={final_delta:.3e} "
+                        f"tau={self.tau:.3e} termination_reason=inner_max_iter"
+                    )
+                    return {
+                        "num_outer_iters": k + 1,
+                        "num_inner_iters": num_inner_iters + t,
+                        "final_delta": final_delta,
+                        "terminated": False,
+                        "termination_reason": "inner_max_iter",
+                        "budget_exhausted": "scsc_inner",
+                    }
 
                 # Lines 10-11: half-step iterates.
                 x_diff = add_vals(x_k_0, scale_vals(x_k_t, -1))
@@ -491,6 +522,7 @@ class Minimax_SCSC(Optimizer):
             "final_delta": final_delta,
             "terminated": terminated,
             "termination_reason": termination_reason,
+            "budget_exhausted": None if terminated else "scsc_outer",
         }
 
 
@@ -702,6 +734,7 @@ def optimize_NCWC(
     gradient_func=None,
     gradient_difference_func=None,
     box_bounds=None,
+    subproblem_max_inner_iter=None,
 ):
     """
     Algorithm 6 of FOP for non-convex-weakly-concave minimax problems.
@@ -715,6 +748,10 @@ def optimize_NCWC(
     Declared boxes give direct KKT residuals; otherwise final_residual_min/max
     are certified upper bounds obtained by removing the regularizers. The
     previous step threshold remains a diagnostic and the stochastic exit rule.
+    max_iter limits NCWC iterations; subproblem_max_iter limits SCSC outer
+    iterations (defaulting to max_iter). subproblem_max_inner_iter optionally
+    limits updates in each deterministic SCSC innermost loop. An unsuccessful
+    deterministic subsolve stops this call and is reported as incomplete.
     """
     if lip_h <= 0:
         raise ValueError(f"Invalid lip_h: {lip_h}")
@@ -724,10 +761,12 @@ def optimize_NCWC(
         raise ValueError(f"Invalid epsilon: {epsilon}")
     if epsilon_0 <= 0:
         raise ValueError(f"Invalid epsilon_0: {epsilon_0}")
-    if max_iter <= 0:
-        raise ValueError(f"Invalid max_iter: {max_iter}")
-    if subproblem_max_iter is not None and subproblem_max_iter <= 0:
-        raise ValueError(f"Invalid subproblem_max_iter: {subproblem_max_iter}")
+    _validate_iteration_budget(max_iter, "max_iter")
+    _validate_iteration_budget(subproblem_max_iter, "subproblem_max_iter", allow_none=True)
+    _validate_iteration_budget(subproblem_max_inner_iter, "subproblem_max_inner_iter",
+                               allow_none=True, allow_zero=True)
+    if sub_routine != 'deterministic' and subproblem_max_inner_iter is not None:
+        raise ValueError("subproblem_max_inner_iter requires deterministic NCWC")
     if log_every <= 0:
         raise ValueError(f"Invalid log_every: {log_every}")
     if lip_tau is not None and lip_tau <= 0:
@@ -758,6 +797,7 @@ def optimize_NCWC(
     final_diff = None
     final_residual_min = final_residual_max = None
     residual_type = termination_reason = None
+    budget_exhausted = last_scsc_stats = None
     terminated = False
 
     if progress_callback is not None:
@@ -771,6 +811,7 @@ def optimize_NCWC(
                 "final_residual_max": None,
                 "residual_type": None,
                 "termination_reason": None,
+                "budget_exhausted": None,
                 "terminated": False,
                 "inner_terminated": False,
                 "ncwc_terminated": False,
@@ -778,6 +819,7 @@ def optimize_NCWC(
                 "scsc_num_inner_iters": 0,
                 "scsc_final_delta": None,
                 "scsc_termination_reason": None,
+                "scsc_budget_exhausted": None,
                 "call_cumulative_scsc_inner_iters": 0,
                 "objective": _evaluate_objective(objective_func, params_x, params_y),
                 "metrics": _evaluate_metrics(metrics_func, params_x, params_y),
@@ -820,6 +862,7 @@ def optimize_NCWC(
                 gradient_func=grad_k,
                 gradient_difference_func=grad_diff_k,
                 box_bounds=box_bounds,
+                max_inner_iter=subproblem_max_inner_iter,
             )
         elif sub_routine == 'stochastic':
             solver = SAPD_SCSC(
@@ -840,6 +883,7 @@ def optimize_NCWC(
         else:
             raise NotImplementedError("This sub_routine is not yet available.")
         solver_stats = solver.run()
+        last_scsc_stats = solver_stats
 
         x_kp1 = [p.clone().detach() for p in params_x]
         diff = compute_norm(add_vals(x_kp1, scale_vals(x_k, -1)))
@@ -849,6 +893,8 @@ def optimize_NCWC(
         exit_criteria_gap = diff - epsilon / (4 * lip_h)
         final_residual_min = final_residual_max = None
         residual_type = termination_reason = None
+        budget_exhausted = None
+        inner_failed = False
         ncwc_terminated = False
         if sub_routine == 'deterministic':
             inner_delta = solver_stats.get("final_delta")
@@ -856,6 +902,14 @@ def optimize_NCWC(
                 solver_stats["terminated"] and inner_delta is not None
                 and math.isfinite(inner_delta) and 0 <= inner_delta <= epsilon_k
             )
+            if not inner_certified:
+                inner_failed = True
+                termination_reason = "inner_solver_failed"
+                budget_exhausted = solver_stats.get("budget_exhausted")
+                if budget_exhausted is None:
+                    budget_exhausted = {"max_iter": "scsc_outer", "inner_max_iter": "scsc_inner"}.get(
+                        solver_stats.get("termination_reason"),
+                    )
             if inner_certified:
                 with torch.no_grad():
                     if min_bounds is not None:
@@ -887,8 +941,9 @@ def optimize_NCWC(
             ncwc_terminated = bool(exit_criteria_gap <= 0)
             if ncwc_terminated:
                 termination_reason = "step_threshold"
-        if not ncwc_terminated and num_outer_iters == max_iter:
+        if not ncwc_terminated and not inner_failed and num_outer_iters == max_iter:
             termination_reason = "max_iter"
+            budget_exhausted = "ncwc"
 
         if progress_callback is not None:
             progress_callback(
@@ -901,6 +956,7 @@ def optimize_NCWC(
                     "final_residual_max": final_residual_max,
                     "residual_type": residual_type,
                     "termination_reason": termination_reason,
+                    "budget_exhausted": budget_exhausted,
                     "terminated": solver_stats["terminated"],
                     "inner_terminated": solver_stats["terminated"],
                     "ncwc_terminated": ncwc_terminated,
@@ -908,6 +964,7 @@ def optimize_NCWC(
                     "scsc_num_inner_iters": solver_stats["num_inner_iters"],
                     "scsc_final_delta": solver_stats.get("final_delta"),
                     "scsc_termination_reason": solver_stats.get("termination_reason"),
+                    "scsc_budget_exhausted": solver_stats.get("budget_exhausted"),
                     "call_cumulative_scsc_inner_iters": num_inner_iters,
                     "objective": _evaluate_objective(objective_func, params_x, params_y),
                     "metrics": _evaluate_metrics(metrics_func, params_x, params_y),
@@ -915,18 +972,21 @@ def optimize_NCWC(
             )
 
         if verbose and (
-            k % log_every == 0 or ncwc_terminated or num_outer_iters == max_iter
+            k % log_every == 0 or ncwc_terminated or inner_failed or num_outer_iters == max_iter
         ):
             print(
                 f"optimize_NCWC outer={k} epsilon_k={epsilon_k:.3e} exit_criteria_gap={exit_criteria_gap:.3e} "
                 f"inner_terminated={solver_stats['terminated']} ncwc_terminated={ncwc_terminated} "
                 f"residual_min={final_residual_min} residual_max={final_residual_max} "
-                f"residual_type={residual_type} termination_reason={termination_reason}",
+                f"residual_type={residual_type} termination_reason={termination_reason} "
+                f"budget_exhausted={budget_exhausted}",
                 flush=True,
             )
 
         if ncwc_terminated:
             terminated = True
+            break
+        if inner_failed:
             break
 
         x_k = x_kp1
@@ -939,5 +999,7 @@ def optimize_NCWC(
         "final_residual_max": final_residual_max,
         "residual_type": residual_type,
         "termination_reason": termination_reason,
+        "budget_exhausted": budget_exhausted,
+        "last_scsc_stats": last_scsc_stats,
         "terminated": terminated,
     }
