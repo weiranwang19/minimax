@@ -59,24 +59,6 @@ def _normalize_box_bounds(bounds, num_min, num_max):
     return tuple(result)
 
 
-def _box_stationarity_residual(values, gradients, bounds, maximize=False):
-    """Minimum-norm KKT residual at a feasible point in the declared boxes.
-
-    Boundaries are compared exactly: a nearby interior point has no normal
-    cone to cancel its gradient. Maximization uses the negative gradient.
-    """
-    residual = []
-    for value, gradient, (lo, hi) in zip(values, gradients, bounds):
-        if not torch.all(torch.isfinite(value)) or not torch.all(torch.isfinite(gradient)):
-            raise RuntimeError("Box stationarity certificate encountered non-finite values")
-        if torch.any((value < lo) | (value > hi)):
-            raise RuntimeError("Box stationarity candidate is outside declared box_bounds")
-        g = -gradient if maximize else gradient
-        residual.append(torch.where(value == lo, g.clamp_max(0),
-                                    torch.where(value == hi, g.clamp_min(0), g)))
-    return residual
-
-
 def _box_projection_quotient(values, gradients, step, bounds, maximize=False):
     """Exact box-projection quotient, avoiding subtraction of nearby iterates.
 
@@ -119,7 +101,7 @@ def _regularize_gradient_callbacks(gradient_func, gradient_difference_func,
 class Minimax_SCSC(Optimizer):
     """
     Algorithm 5 of FOP for strongly-convex-strongly-concave minimax problems.
-    Algorithm B.1 of SMO, inner solver reused by the higher-level wrappers.
+    Algorithm 4 of SMO, inner solver reused by the higher-level wrappers.
     References below are to Algorithm 5 in arXiv:2301.01716v2, p. 25:
     https://arxiv.org/pdf/2301.01716#page=25
 
@@ -128,8 +110,9 @@ class Minimax_SCSC(Optimizer):
     box_bounds declares box projection prox operators: either a shared
     (lo, hi) pair or {'min': [pairs...], 'max': [pairs...]} with one pair per
     parameter tensor. Callers must ensure their prox operators agree.
-    Every feasible inner candidate is checked for stationarity, using box
-    normals when declared and the proximal subgradients otherwise.
+    Declared boxes use an algebraically equivalent stable evaluation of the
+    original projected residual. The inner loop uses the relative condition;
+    success requires the projected residual after the outer update <= tau.
     max_iter caps outer iterations. max_inner_iter caps updates separately
     within each outer iteration; None leaves those updates uncapped.
     """
@@ -244,25 +227,6 @@ class Minimax_SCSC(Optimizer):
         a_y_k = add_vals(scale_vals(y_grad_hat, -1), y_tmp)
         return a_x_k, a_y_k
 
-    def compute_inner_stationarity_residual(self, x_val, y_val, x_grad, y_grad,
-                                           b_x, b_y):
-        """Certificate for h_bar + p - q at the current proximal candidate.
-
-        Proximal optimality gives b_x in partial p(x), b_y in partial q(y).
-        Thus (grad_x h_bar + b_x, -grad_y h_bar + b_y) is a valid residual.
-        Declared boxes allow the minimum-norm normal without subtracting
-        nearby iterates to recover b. No gradient evaluation is needed here.
-        """
-        if self._min_box_bounds is not None:
-            return (
-                _box_stationarity_residual(x_val, x_grad, self._min_box_bounds),
-                _box_stationarity_residual(y_val, y_grad, self._max_box_bounds, maximize=True),
-            )
-        for value in x_val + y_val + x_grad + y_grad + b_x + b_y:
-            if not torch.all(torch.isfinite(value)):
-                raise RuntimeError("Minimax_SCSC encountered non-finite inner certificate values")
-        return add_vals(x_grad, b_x), add_vals(scale_vals(y_grad, -1), b_y)
-
     def compute_stationarity_residual(self, x_val, y_val, x_hat, y_hat, x_grad, y_grad):
         """Algorithm 5, line 25, retaining the original norm and tolerance.
 
@@ -341,40 +305,8 @@ class Minimax_SCSC(Optimizer):
                 # Input: beta_t = 2/(t+3); existing lr multiplier is an extension.
                 beta_t = self.lr * 2 / (t + 3)
 
-                # Certify the original SCSC objective at this feasible candidate,
-                # before asking the auxiliary relative test for another update.
-                # Reuse these gradients for a_k if the certificate does not pass.
-                x_grad_t, y_grad_t = self.compute_h_bar_gradient(x_k_t, y_k_t)
-                inner_rx, inner_ry = self.compute_inner_stationarity_residual(
-                    x_k_t, y_k_t, x_grad_t, y_grad_t, b_x_k_t, b_y_k_t,
-                )
-                inner_delta = compute_norm(inner_rx + inner_ry)
-                if not torch.isfinite(inner_delta):
-                    raise RuntimeError(
-                        f"Minimax_SCSC encountered non-finite inner stationarity delta at outer={k}, inner={t}"
-                    )
-                # The following condition is therefore a heuristic
-                if inner_delta <= self.tau:
-                    self.assign_x(x_k_t)
-                    self.assign_y(y_k_t)
-                    final_delta = float(inner_delta.item())
-                    self._log(
-                        f"Minimax_SCSC outer={k} inner_t={t} delta={final_delta:.3e} "
-                        f"tau={self.tau:.3e} termination_reason=inner_certificate"
-                    )
-                    return {
-                        "num_outer_iters": k + 1,
-                        "num_inner_iters": num_inner_iters + t,
-                        "final_delta": final_delta,
-                        "terminated": True,
-                        "termination_reason": "inner_certificate",
-                        "budget_exhausted": None,
-                    }
-
                 # Line 9: stop the inner loop when the residual inequality holds.
-                a_x_t, a_y_t = self._compute_a_k_from_gradient(
-                    x_k_t, y_k_t, z_g_k, y_g_k, x_grad_t, y_grad_t,
-                )
+                a_x_t, a_y_t = self.compute_a_k(x_k_t, y_k_t, z_g_k, y_g_k)
                 x_tmp = add_vals(a_x_t, b_x_k_t)
                 y_tmp = add_vals(a_y_t, b_y_k_t)
                 lhs = self.gamma_x * compute_norm(x_tmp) ** 2 + self.gamma_y * compute_norm(y_tmp) ** 2
@@ -392,15 +324,13 @@ class Minimax_SCSC(Optimizer):
                 if self.max_inner_iter is not None and t >= self.max_inner_iter:
                     self.assign_x(x_k_t)
                     self.assign_y(y_k_t)
-                    final_delta = float(inner_delta.item())
                     self._log(
-                        f"Minimax_SCSC outer={k} inner_t={t} delta={final_delta:.3e} "
-                        f"tau={self.tau:.3e} termination_reason=inner_max_iter"
+                        f"Minimax_SCSC outer={k} inner_t={t} termination_reason=inner_max_iter"
                     )
                     return {
                         "num_outer_iters": k + 1,
                         "num_inner_iters": num_inner_iters + t,
-                        "final_delta": final_delta,
+                        "final_delta": None,
                         "terminated": False,
                         "termination_reason": "inner_max_iter",
                         "budget_exhausted": "scsc_inner",
@@ -474,7 +404,7 @@ class Minimax_SCSC(Optimizer):
             # Line 22: recover x^{k+1}.
             x_kp1 = scale_vals(z_kp1, -1 / self.sigma_x)
 
-            # Lines 23-24: projected certificate points (unchanged step size).
+            # Lines 23-24: projected points for the original stopping test.
             x_grad, y_grad = self.compute_h_bar_gradient(x_kp1, y_kp1)
             x_hat_kp1 = add_vals(x_kp1, scale_vals(x_grad, -self.zeta_hat))
             x_hat_kp1 = compute_prox(x_hat_kp1, self.prox_x, self.zeta_hat)
@@ -507,7 +437,7 @@ class Minimax_SCSC(Optimizer):
             # Line 25.
             if delta <= self.tau:
                 terminated = True
-                termination_reason = "outer_certificate"
+                termination_reason = "residual_threshold"
                 break
 
             # Line 26: carry the state into the next outer iteration.
@@ -552,34 +482,6 @@ def _evaluate_metrics(metrics_func, params_x, params_y):
         else:
             normalized[key] = float(value)
     return normalized
-
-
-def _ncwc_objective_gradient(h_func, gradient_func, params_x, params_y):
-    """Differentiate the original objective at the current NCWC endpoint.
-
-    Autograd must not overwrite the SCSC gradient buffers or permanently
-    change parameter flags. Unused parameters have zero smooth gradients.
-    """
-    if gradient_func is not None:
-        with torch.no_grad():
-            return _validate_gradient_result(
-                gradient_func(params_x, params_y), params_x, params_y,
-            )
-    params = params_x + params_y
-    flags = [p.requires_grad for p in params]
-    try:
-        with torch.enable_grad():
-            for p in params:
-                p.requires_grad_(True)
-            loss = torch.as_tensor(h_func())
-            gradients = (torch.autograd.grad(loss, params, allow_unused=True)
-                         if loss.requires_grad else [None] * len(params))
-            gradients = [torch.zeros_like(p) if g is None else g.detach()
-                         for p, g in zip(params, gradients)]
-        return gradients[:len(params_x)], gradients[len(params_x):]
-    finally:
-        for p, flag in zip(params, flags):
-            p.requires_grad_(flag)
 
 
 class SAPD_SCSC(Optimizer):
@@ -738,16 +640,15 @@ def optimize_NCWC(
 ):
     """
     Algorithm 6 of FOP for non-convex-weakly-concave minimax problems.
-    Algorithm B.2 of SMO outer wrapper for the sigma_y = 0 case: it repeatedly regularizes the minimax problem and calls the strongly-convex-strongly-concave inner solver above.
+    Algorithm 5 of SMO for the sigma_y = 0 case: it repeatedly regularizes the minimax problem and calls the strongly-convex-strongly-concave inner solver above.
     Optional callbacks describe h_func BEFORE regularization. They use the
     same tensor-list contract as Minimax_SCSC; only deterministic mode
     supports explicit gradients and declared box projections.
 
-    Deterministic convergence requires a successful SCSC certificate followed
-    by stationarity of the original objective, with each block norm <= epsilon.
-    Declared boxes give direct KKT residuals; otherwise final_residual_min/max
-    are certified upper bounds obtained by removing the regularizers. The
-    previous step threshold remains a diagnostic and the stochastic exit rule.
+    Deterministic convergence requires successful SCSC termination under its
+    original projected residual test, followed by the minimizing-block step
+    norm <= epsilon / (4 * lip_h). The stochastic exit rule uses the same step
+    threshold without requiring deterministic inner termination.
     max_iter limits NCWC iterations; subproblem_max_iter limits SCSC outer
     iterations (defaulting to max_iter). subproblem_max_inner_iter optionally
     limits updates in each deterministic SCSC innermost loop. An unsuccessful
@@ -787,7 +688,7 @@ def optimize_NCWC(
 
     params_x = list(params_x)
     params_y = list(params_y)
-    min_bounds, max_bounds = _normalize_box_bounds(box_bounds, len(params_x), len(params_y))
+    _normalize_box_bounds(box_bounds, len(params_x), len(params_y))
     x_k = clone_vals(params_x)
     y_0 = clone_vals(params_y)
     inner_max_iter = max_iter if subproblem_max_iter is None else subproblem_max_iter
@@ -795,8 +696,7 @@ def optimize_NCWC(
     num_outer_iters = 0
     num_inner_iters = 0
     final_diff = None
-    final_residual_min = final_residual_max = None
-    residual_type = termination_reason = None
+    termination_reason = None
     budget_exhausted = last_scsc_stats = None
     terminated = False
 
@@ -807,9 +707,6 @@ def optimize_NCWC(
                 "epsilon": epsilon,
                 "epsilon_k": None,
                 "final_diff": None,
-                "final_residual_min": None,
-                "final_residual_max": None,
-                "residual_type": None,
                 "termination_reason": None,
                 "budget_exhausted": None,
                 "terminated": False,
@@ -891,18 +788,17 @@ def optimize_NCWC(
         num_outer_iters = k + 1
         num_inner_iters += solver_stats["num_inner_iters"]
         exit_criteria_gap = diff - epsilon / (4 * lip_h)
-        final_residual_min = final_residual_max = None
-        residual_type = termination_reason = None
+        termination_reason = None
         budget_exhausted = None
         inner_failed = False
         ncwc_terminated = False
         if sub_routine == 'deterministic':
             inner_delta = solver_stats.get("final_delta")
-            inner_certified = (
+            inner_succeeded = (
                 solver_stats["terminated"] and inner_delta is not None
                 and math.isfinite(inner_delta) and 0 <= inner_delta <= epsilon_k
             )
-            if not inner_certified:
+            if not inner_succeeded:
                 inner_failed = True
                 termination_reason = "inner_solver_failed"
                 budget_exhausted = solver_stats.get("budget_exhausted")
@@ -910,33 +806,10 @@ def optimize_NCWC(
                     budget_exhausted = {"max_iter": "scsc_outer", "inner_max_iter": "scsc_inner"}.get(
                         solver_stats.get("termination_reason"),
                     )
-            if inner_certified:
-                with torch.no_grad():
-                    if min_bounds is not None:
-                        gx, gy = _ncwc_objective_gradient(h_func, gradient_func, params_x, params_y)
-                        final_residual_min = float(compute_norm(_box_stationarity_residual(
-                            params_x, gx, min_bounds,
-                        )).item())
-                        final_residual_max = float(compute_norm(_box_stationarity_residual(
-                            params_y, gy, max_bounds, maximize=True,
-                        )).item())
-                        residual_type = "box_kkt"
-                    else:
-                        # Removing the regularizers gives valid residual vectors
-                        # with these bounds, using the prescribed inner accuracy.
-                        max_displacement = float(compute_norm(
-                            add_vals(params_y, scale_vals(y_0, -1)),
-                        ).item())
-                        final_residual_min = epsilon_k + 2 * lip_h * final_diff
-                        final_residual_max = epsilon_k + sigma_y * max_displacement
-                        residual_type = "bound"
-                ncwc_terminated = (
-                    math.isfinite(final_residual_min) and math.isfinite(final_residual_max)
-                    and max(final_residual_min, final_residual_max) <= epsilon
-                )
+            if inner_succeeded:
+                ncwc_terminated = bool(exit_criteria_gap <= 0)
                 if ncwc_terminated:
-                    termination_reason = ("direct_certificate" if residual_type == "box_kkt"
-                                          else "bound_certificate")
+                    termination_reason = "step_threshold"
         else:
             ncwc_terminated = bool(exit_criteria_gap <= 0)
             if ncwc_terminated:
@@ -952,9 +825,6 @@ def optimize_NCWC(
                     "epsilon": epsilon,
                     "epsilon_k": epsilon_k,
                     "final_diff": final_diff,
-                    "final_residual_min": final_residual_min,
-                    "final_residual_max": final_residual_max,
-                    "residual_type": residual_type,
                     "termination_reason": termination_reason,
                     "budget_exhausted": budget_exhausted,
                     "terminated": solver_stats["terminated"],
@@ -977,8 +847,7 @@ def optimize_NCWC(
             print(
                 f"optimize_NCWC outer={k} epsilon_k={epsilon_k:.3e} exit_criteria_gap={exit_criteria_gap:.3e} "
                 f"inner_terminated={solver_stats['terminated']} ncwc_terminated={ncwc_terminated} "
-                f"residual_min={final_residual_min} residual_max={final_residual_max} "
-                f"residual_type={residual_type} termination_reason={termination_reason} "
+                f"termination_reason={termination_reason} "
                 f"budget_exhausted={budget_exhausted}",
                 flush=True,
             )
@@ -995,9 +864,6 @@ def optimize_NCWC(
         "num_outer_iters": num_outer_iters,
         "num_inner_iters": num_inner_iters,
         "final_diff": final_diff,
-        "final_residual_min": final_residual_min,
-        "final_residual_max": final_residual_max,
-        "residual_type": residual_type,
         "termination_reason": termination_reason,
         "budget_exhausted": budget_exhausted,
         "last_scsc_stats": last_scsc_stats,

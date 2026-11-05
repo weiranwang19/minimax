@@ -778,8 +778,8 @@ def optimize_bilevel_constrained_minimax(
     callback. Absent factories preserve the generic autograd path.
     Optional box_bounds=(lo, hi) declares shared primal projection bounds
     for x, y1 and z1; multiplier bounds [0, lagrange_bound] are appended
-    separately for the SCSC certificates. Without metadata the always-active
-    inner certificate uses the proximal subgradients instead.
+    separately for the stable evaluation of SCSC's original projected residual.
+    Without metadata the residual uses the generic proximal quotients.
     When warm_start_lower is enabled, initialize the lower primal-dual block
     with AGD on a smooth quadratic-penalty lower subproblem.
 

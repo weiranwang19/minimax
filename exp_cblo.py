@@ -25,8 +25,8 @@ PROBLEM_SIZES = [(5,5,2)]
 # Zero-based instance indices. Edit this list to rerun only failed/interrupted instances
 # while keeping the exact same sampled instance for each (n, m, l) across methods.
 # NUM_INSTANCES = list(range(5))
-NUM_INSTANCES = [1]
-SOLVER_METHOD = "fop"
+NUM_INSTANCES = [0]
+SOLVER_METHOD = "gcmo"
 # FOP
 BASE_RHO = 2
 FINAL_EPS = 1e-2
@@ -55,8 +55,8 @@ SMO_STABLE_BOX_RESIDUAL = True
 # GCMO
 GCMO_EPS = 1e-2
 GCMO_NCWC_MAX_ITERS = 100000
-GCMO_SCSC_MAX_OUTER_ITERS = 100000
-GCMO_SCSC_MAX_INNER_ITERS = None
+GCMO_SCSC_MAX_OUTER_ITERS = 10000
+GCMO_SCSC_MAX_INNER_ITERS = 1000
 GCMO_LAGRANGE_BOUND = 200
 GCMO_LIP_OVERRIDE = None
 # None runs until certified; 0 evaluates the seed without AGD updates.
@@ -86,9 +86,6 @@ NCWC_HISTORY_METRICS = (
     "ncwc/terminated",
     "ncwc/epsilon",
     "ncwc/epsilon_k",
-    "ncwc/final_residual_min",
-    "ncwc/final_residual_max",
-    "ncwc/residual_type",
     "ncwc/termination_reason",
     "ncwc/scsc_final_delta",
     "ncwc/scsc_termination_reason",
@@ -316,13 +313,14 @@ def subproblem_status_metrics(method, stats):
     inner = stats.get("last_scsc_stats") or {}
     return {
         **{f"{method}/subproblem/{key}": stats.get(key) for key in (
-            "budget_exhausted", "termination_reason", "final_residual_min", "final_residual_max",
+            "budget_exhausted", "termination_reason",
         )},
         f"{method}/subproblem/scsc_final_delta": inner.get("final_delta"),
     }
 
 
 def build_ncwc_progress_logger(run, ncwc_state):
+    """Log the published step test, inner projected residual, and work budgets."""
     def callback(payload):
         is_new_call = (
             payload["completed_outer_iters"] == 0
@@ -356,8 +354,7 @@ def build_ncwc_progress_logger(run, ncwc_state):
                 "ncwc/terminated": (float(payload["ncwc_terminated"])
                                     if payload.get("ncwc_terminated") is not None else None),
                 **{f"ncwc/{key}": payload.get(key) for key in (
-                    "epsilon", "epsilon_k", "final_residual_min", "final_residual_max",
-                    "residual_type", "termination_reason", "scsc_final_delta",
+                    "epsilon", "epsilon_k", "termination_reason", "scsc_final_delta",
                     "scsc_termination_reason",
                     "budget_exhausted", "scsc_budget_exhausted",
                 )},
@@ -405,8 +402,6 @@ def fail_incomplete_instance(run, method, result, instance_label, initial_object
         "instance/subproblem_num_outer_iters": stats.get("num_outer_iters"),
         "instance/subproblem_num_inner_iters": stats.get("num_inner_iters"),
         "instance/subproblem_final_diff": stats.get("final_diff"),
-        "instance/final_residual_min": stats.get("final_residual_min"),
-        "instance/final_residual_max": stats.get("final_residual_max"),
         "instance/scsc_final_delta": inner.get("final_delta"),
         "instance/scsc_termination_reason": inner.get("termination_reason"),
         "instance/scsc_num_outer_iters": inner.get("num_outer_iters"),

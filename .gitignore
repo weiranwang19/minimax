@@ -12,8 +12,8 @@ tests/*
 !tests/test_cblo_warm_starts.py
 !tests/test_fop_numerics.py
 !tests/test_cblo_gradients.py
-!tests/test_scsc_certificate.py
-!tests/test_ncwc_certificate.py
+!tests/test_scsc_stopping.py
+!tests/test_ncwc_stopping.py
 !tests/test_solver_budgets.py
 svm/__pycache__/
 
