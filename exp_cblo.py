@@ -3,6 +3,7 @@
 import math
 import time
 import tqdm
+from functools import partial
 
 import torch
 from scipy.optimize import linprog
@@ -11,7 +12,7 @@ from utils import clone_vals
 from bilevel_solvers import (
     optimize_bilevel_constrained_minimax,
     optimize_bilevel_constrained_smo,
-    optimize_bilevel_constrained_fop_practical,
+    optimize_bilevel_contrained_fop_practical,
 )
 
 
@@ -20,29 +21,46 @@ torch.set_default_dtype(torch.float64)
 
 # Section 4.2 / Table 2 experiment controls. `PROBLEM_SIZES` is the actual grid of (n, m, l) values; the rest are algorithmic parameters that can be tuned for better performance.
 # PROBLEM_SIZES = [(100 * k, 100 * k, 5 * k) for k in range(1,4)]
-PROBLEM_SIZES = [(500, 500, 25)]
+PROBLEM_SIZES = [(100,100,5)]
 # Zero-based instance indices. Edit this list to rerun only failed/interrupted instances
 # while keeping the exact same sampled instance for each (n, m, l) across methods.
 # NUM_INSTANCES = list(range(5))
-NUM_INSTANCES = [0,2,3,4,6,7,8,9]
+NUM_INSTANCES = [0]
 SOLVER_METHOD = "gcmo"
 # FOP
-BASE_RHO = 5.0
+BASE_RHO = 2
 FINAL_EPS = 1e-2
-MAX_OUTER_ITERS = 200
-ALG4_MAX_ITERS = 200
+FOP_MAX_STAGES = 200
+FOP_NCWC_MAX_ITERS = 1000
+FOP_SCSC_MAX_OUTER_ITERS = 5000
+# Per SCSC outer iteration; None leaves the innermost updates uncapped.
+FOP_SCSC_MAX_INNER_ITERS = 10000
+FOP_LIP_SCALE = None
+# None runs AGD until certified; a nonnegative integer caps its updates.
+FOP_AGD_MAX_ITERS = None
+FOP_STABLE_BOX_RESIDUAL = True
 
 # SMO
 SMO_EPS = 1e-2
 SMO_EPSILON_0 = 1.0
 SMO_TAU = 0.8
-SMO_SUBPROBLEM_MAX_ITERS = 200
+SMO_MAX_STAGES = None  # Follow the tolerance schedule unless explicitly capped.
+SMO_NCWC_MAX_ITERS = 1000
+SMO_SCSC_MAX_OUTER_ITERS = 200
+SMO_SCSC_MAX_INNER_ITERS = 1000
+SMO_LIP_SCALE = None
+SMO_AGD_MAX_ITERS = None
+SMO_STABLE_BOX_RESIDUAL = True
 
 # GCMO
 GCMO_EPS = 1e-2
-GCMO_MAX_ITERS = 200
+GCMO_NCWC_MAX_ITERS = 500
+GCMO_SCSC_MAX_OUTER_ITERS = 300
+GCMO_SCSC_MAX_INNER_ITERS = 1000
 GCMO_LAGRANGE_BOUND = 200
 GCMO_LIP_OVERRIDE = None
+# None runs until certified; 0 evaluates the seed without AGD updates.
+GCMO_AGD_MAX_ITERS = None
 
 # Common
 FEAS_TOL = 1e-2
@@ -59,16 +77,30 @@ NCWC_HISTORY_METRICS = (
     "ncwc/upper_obj",
     "ncwc/feas",
     "ncwc/lower_gap",
+    "ncwc/primal_dual_gap",
     "ncwc/call_index",
     "ncwc/completed_outer_iters",
     "ncwc/scsc_inner_iters",
     "ncwc/final_diff",
     "ncwc/inner_terminated",
+    "ncwc/terminated",
+    "ncwc/epsilon",
+    "ncwc/epsilon_k",
+    "ncwc/termination_reason",
+    "ncwc/scsc_final_delta",
+    "ncwc/scsc_termination_reason",
+    "ncwc/budget_exhausted",
+    "ncwc/scsc_budget_exhausted",
+    "ncwc/scsc_outer_iters",
 )
 FOP_STAGE_METRICS = (
     "fop/stage/rho",
     "fop/stage/mu",
     "fop/stage/epsilon",
+    "fop/stage/lip_h",
+    "fop/stage/computed_lip_h",
+    "fop/stage/lip_scale",
+    "fop/stage/lip_override",
     "fop/warm_start/num_iters",
     "fop/warm_start/target_num_iters",
     "fop/warm_start/capped",
@@ -85,6 +117,10 @@ SMO_STAGE_METRICS = (
     "smo/stage/rho",
     "smo/stage/mu",
     "smo/stage/lambda_norm",
+    "smo/stage/lip_h",
+    "smo/stage/computed_lip_h",
+    "smo/stage/lip_scale",
+    "smo/stage/lip_override",
     "smo/warm_start/num_iters",
     "smo/warm_start/target_num_iters",
     "smo/warm_start/capped",
@@ -120,6 +156,12 @@ GCMO_STAGE_METRICS = (
     "gcmo/post/lambda_distance",
     "gcmo/post/lambda_touched_bound",
     "gcmo/post/z_lambda_touched_bound",
+    "gcmo/warm_start/primal_dual_gap",
+    "gcmo/post/primal_dual_gap",
+)
+WARM_START_METRIC_FIELDS = (
+    "num_iters", "target_num_iters", "capped", "terminated", "objective",
+    "lower_bound", "certificate_gap", "epsilon", "stopping_rule", "stopping_reason",
 )
 
 # Global state placeholders for the current problem instance and iteration
@@ -165,15 +207,16 @@ def _configure_run_metrics(run):
     run.define_metric(step_metric)
     for metric_name in NCWC_HISTORY_METRICS:
         run.define_metric(metric_name, step_metric=step_metric)
-    run.define_metric("fop/stage/index")
-    for metric_name in FOP_STAGE_METRICS:
-        run.define_metric(metric_name, step_metric="fop/stage/index")
-    run.define_metric("smo/stage/index")
-    for metric_name in SMO_STAGE_METRICS:
-        run.define_metric(metric_name, step_metric="smo/stage/index")
-    run.define_metric("gcmo/stage/index")
-    for metric_name in GCMO_STAGE_METRICS:
-        run.define_metric(metric_name, step_metric="gcmo/stage/index")
+    for method, stage_metrics in (
+        ("fop", FOP_STAGE_METRICS), ("smo", SMO_STAGE_METRICS), ("gcmo", GCMO_STAGE_METRICS),
+    ):
+        step_metric = f"{method}/stage/index"
+        run.define_metric(step_metric)
+        warm_metrics = tuple(f"{method}/warm_start/{field}" for field in WARM_START_METRIC_FIELDS)
+        status_metrics = tuple(subproblem_status_metrics(method, {}))
+        stage_status_metrics = (f"{method}/stage/budget_exhausted", f"{method}/stage/termination_reason")
+        for metric_name in dict.fromkeys(stage_metrics + warm_metrics + status_metrics + stage_status_metrics):
+            run.define_metric(metric_name, step_metric=step_metric)
 
 
 def init_instance_run(problem_size, instance_idx, instance_position, num_instances):
@@ -193,18 +236,45 @@ def init_instance_run(problem_size, instance_idx, instance_position, num_instanc
         "final_eps": FINAL_EPS,
         "feas_tol": FEAS_TOL,
         "lower_gap_tol": LOWER_GAP_TOL,
-        "max_outer_iters": MAX_OUTER_ITERS,
-        "alg4_max_iters": ALG4_MAX_ITERS,
+        # Historical aliases retain comparability with older runs.
+        "max_outer_iters": FOP_MAX_STAGES,
+        "alg4_max_iters": FOP_NCWC_MAX_ITERS,
+        "fop_max_stages": FOP_MAX_STAGES,
+        "fop_ncwc_max_iters": FOP_NCWC_MAX_ITERS,
+        "fop_scsc_max_outer_iters": FOP_SCSC_MAX_OUTER_ITERS,
+        "fop_scsc_max_inner_iters": FOP_SCSC_MAX_INNER_ITERS,
+        "fop_lip_scale": FOP_LIP_SCALE,
+        "fop_agd_max_iters": FOP_AGD_MAX_ITERS,
+        "fop_stable_box_residual": FOP_STABLE_BOX_RESIDUAL,
+        "gradient_backend": "explicit",
         "smo_eps": SMO_EPS,
         "smo_epsilon_0": SMO_EPSILON_0,
         "smo_tau": SMO_TAU,
-        "smo_subproblem_max_iters": SMO_SUBPROBLEM_MAX_ITERS,
+        "smo_subproblem_max_iters": SMO_NCWC_MAX_ITERS,
+        "smo_max_stages": SMO_MAX_STAGES,
+        "smo_ncwc_max_iters": SMO_NCWC_MAX_ITERS,
+        "smo_scsc_max_outer_iters": SMO_SCSC_MAX_OUTER_ITERS,
+        "smo_scsc_max_inner_iters": SMO_SCSC_MAX_INNER_ITERS,
+        "smo_lip_scale": SMO_LIP_SCALE,
+        "smo_agd_max_iters": SMO_AGD_MAX_ITERS,
+        "smo_stable_box_residual": SMO_STABLE_BOX_RESIDUAL,
         "gcmo_eps": GCMO_EPS,
-        "gcmo_max_iters": GCMO_MAX_ITERS,
+        "gcmo_max_iters": GCMO_NCWC_MAX_ITERS,
+        "gcmo_ncwc_max_iters": GCMO_NCWC_MAX_ITERS,
+        "gcmo_scsc_max_outer_iters": GCMO_SCSC_MAX_OUTER_ITERS,
+        "gcmo_scsc_max_inner_iters": GCMO_SCSC_MAX_INNER_ITERS,
         "gcmo_lagrange_bound": GCMO_LAGRANGE_BOUND,
         "gcmo_lip_override": GCMO_LIP_OVERRIDE,
+        "gcmo_agd_max_iters": GCMO_AGD_MAX_ITERS,
     }
-    lip_label = f"lip{GCMO_LIP_OVERRIDE:g}" if GCMO_LIP_OVERRIDE is not None else "lipauto"
+    if SOLVER_METHOD in {"fop", "smo"}:
+        selected_lip_scale = {
+            "fop": FOP_LIP_SCALE,
+            "smo": SMO_LIP_SCALE,
+        }[SOLVER_METHOD]
+        lip_label = f"lipscale{selected_lip_scale:g}" if selected_lip_scale is not None else "lipauto"
+    else:
+        lip_label = f"lip{GCMO_LIP_OVERRIDE:g}" if GCMO_LIP_OVERRIDE is not None else "lipauto"
     run = wandb.init(
         project=WANDB_PROJECT,
         entity=WANDB_ENTITY,
@@ -232,7 +302,25 @@ def log_stage(run, metrics, step):
     run.log(_compact_metrics(metrics))
 
 
+def warm_start_metrics(method, stats):
+    return {
+        f"{method}/warm_start/{field}": float(stats[field]) if isinstance(stats[field], bool) else stats[field]
+        for field in WARM_START_METRIC_FIELDS if field in stats
+    }
+
+
+def subproblem_status_metrics(method, stats):
+    inner = stats.get("last_scsc_stats") or {}
+    return {
+        **{f"{method}/subproblem/{key}": stats.get(key) for key in (
+            "budget_exhausted", "termination_reason",
+        )},
+        f"{method}/subproblem/scsc_final_delta": inner.get("final_delta"),
+    }
+
+
 def build_ncwc_progress_logger(run, ncwc_state):
+    """Log the published step test, inner projected residual, and work budgets."""
     def callback(payload):
         is_new_call = (
             payload["completed_outer_iters"] == 0
@@ -256,11 +344,20 @@ def build_ncwc_progress_logger(run, ncwc_state):
                 "ncwc/upper_obj": metrics.get("upper_obj", payload["objective"]),
                 "ncwc/feas": metrics.get("feas"),
                 "ncwc/lower_gap": metrics.get("lower_gap"),
+                "ncwc/primal_dual_gap": metrics.get("primal_dual_gap"),
                 "ncwc/call_index": call_index,
                 "ncwc/completed_outer_iters": payload["completed_outer_iters"],
                 "ncwc/scsc_inner_iters": payload["scsc_num_inner_iters"],
+                "ncwc/scsc_outer_iters": payload.get("scsc_num_outer_iters"),
                 "ncwc/final_diff": payload["final_diff"],
                 "ncwc/inner_terminated": float(payload["inner_terminated"]),
+                "ncwc/terminated": (float(payload["ncwc_terminated"])
+                                    if payload.get("ncwc_terminated") is not None else None),
+                **{f"ncwc/{key}": payload.get(key) for key in (
+                    "epsilon", "epsilon_k", "termination_reason", "scsc_final_delta",
+                    "scsc_termination_reason",
+                    "budget_exhausted", "scsc_budget_exhausted",
+                )},
             },
         )
         ncwc_state["base_scsc_inner_iters"] = max(
@@ -273,10 +370,45 @@ def build_ncwc_progress_logger(run, ncwc_state):
 def finish_instance_run(run, summary):
     if run is None:
         return
+    summary = dict(summary)
+    summary.setdefault("instance/terminated", 0.0 if summary.get("instance/failed") else 1.0)
+    summary.setdefault("instance/termination_reason", "failed" if summary.get("instance/failed") else "converged")
     for key, value in summary.items():
         if hasattr(run, "summary"):
             run.summary[key] = value
     run.finish()
+
+
+def fail_incomplete_instance(run, method, result, instance_label, initial_objective, start_time):
+    """Finalize an incomplete solver result before the grid driver handles it."""
+    if "solver_stats" in result:
+        stats = result["solver_stats"]
+    elif result.get("last_subproblem") is not None:
+        stats = result["last_subproblem"]["solver_stats"]
+    else:
+        history = result.get("history") or [{}]
+        stats = history[-1].get("subproblem_stats", {})
+    inner = stats.get("last_scsc_stats") or {}
+    reason = result.get("termination_reason") or stats.get("termination_reason") or "incomplete"
+    budget = result.get("budget_exhausted") or stats.get("budget_exhausted")
+    finish_instance_run(run, _compact_metrics({
+        "instance/failed": 1.0,
+        "instance/terminated": 0.0,
+        "instance/termination_reason": reason,
+        "instance/budget_exhausted": budget,
+        "instance/initial_objective": initial_objective,
+        "instance/elapsed_sec": time.perf_counter() - start_time,
+        "instance/num_outer_iters": result.get("num_outer_iters", stats.get("num_outer_iters")),
+        "instance/subproblem_num_outer_iters": stats.get("num_outer_iters"),
+        "instance/subproblem_num_inner_iters": stats.get("num_inner_iters"),
+        "instance/subproblem_final_diff": stats.get("final_diff"),
+        "instance/scsc_final_delta": inner.get("final_delta"),
+        "instance/scsc_termination_reason": inner.get("termination_reason"),
+        "instance/scsc_num_outer_iters": inner.get("num_outer_iters"),
+        "instance/scsc_num_inner_iters": inner.get("num_inner_iters"),
+    }))
+    raise RuntimeError(f"Instance {instance_label} {method.upper()} incomplete: "
+                       f"termination_reason={reason}, budget_exhausted={budget}")
 
 
 def prox_box(v, coeff):
@@ -287,6 +419,11 @@ def prox_box(v, coeff):
 
 def project_box(v):
     return torch.clamp(v, min=-1.0, max=1.0)
+
+
+def box_linear_minimizer(coefficients):
+    """Exact linear minimizer over the product of [-1, 1] primal boxes."""
+    return [-torch.sign(coefficient) for coefficient in coefficients]
 
 
 def positive_part(v):
@@ -309,6 +446,136 @@ def lower_constraints(x_params, z_params):
     return A_MAT @ x_params[0] + B_MAT @ z_params[0] - B_VEC
 
 
+class LinearCBLOOracle:
+    """Exact derivatives for this experiment; NCWC adds its regularization.
+
+    Capture the instance independently of later changes to experiment globals.
+    The data tensors are treated as immutable. Gradient callbacks return true
+    derivatives in both blocks; the solver handles the maximization signs.
+    """
+
+    def __init__(self, a, b, rhs, c, d, d_tilde):
+        self.a, self.b, self.rhs, self.c, self.d, self.d_tilde = (
+            v.detach() for v in (a, b, rhs, c, d, d_tilde)
+        )
+        self.at, self.bt = self.a.T, self.b.T
+
+    @classmethod
+    def from_current_instance(cls):
+        return cls(A_MAT, B_MAT, B_VEC, C, D, D_TILDE)
+
+    @staticmethod
+    def _check_method(method, mu, lambda_k):
+        if method not in {"fop", "smo", "gcmo"}:
+            raise ValueError(f"Unknown CBLO method: {method}")
+        if method in {"fop", "smo"} and (mu is None or mu <= 0):
+            raise ValueError("FOP/SMO require positive mu")
+        if method == "smo" and lambda_k is None:
+            raise ValueError("SMO requires a stage multiplier")
+
+    def _residuals(self, min_vals, max_vals):
+        x, y = min_vals[:2]
+        z = max_vals[0]
+        ax_minus_b = self.a @ x - self.rhs
+        return ax_minus_b + self.b @ y, ax_minus_b + self.b @ z
+
+    @staticmethod
+    def _penalty(residual, method, rho, mu, lambda_k, with_value=False):
+        # FOP (30), (33)-(34), pp. 7-8:
+        # https://arxiv.org/pdf/2301.01716#page=7
+        # rho*mu*||[s]+||^2 has derivative 2*rho*mu*[s]+.
+        # SMO (8), p. 4: https://arxiv.org/pdf/2511.07398#page=4
+        # ||[lambda+mu*s]+||^2/(2*mu) has derivative [lambda+mu*s]+;
+        # the 2*mu cancels, with no additional rho outside the weights.
+        if method == "smo":
+            positive = (lambda_k + mu * residual).clamp_min(0)
+            weight = positive
+            coefficient = 1.0 / (2.0 * mu)
+        else:
+            positive = residual.clamp_min(0)
+            coefficient = rho * mu
+            weight = (2.0 * coefficient) * positive
+        if with_value:
+            return coefficient * positive.square().sum(), weight
+        return weight
+
+    def _primal_gradients(self, wy, wz):
+        return self.at @ (wy-wz), self.bt @ wy, -(self.bt @ wz)
+
+    def saddle_gradients(self, method, rho, mu=None, lambda_k=None):
+        self._check_method(method, mu, lambda_k)
+        if rho <= 0:
+            raise ValueError("rho must be positive")
+        lam = None if lambda_k is None else lambda_k.detach().clone()
+        lower_gradient = rho * self.d_tilde
+
+        def weights(min_vals, max_vals):
+            if method == "gcmo":
+                # h = upper + rho*(lower_y + beta*s_y - lower_z - alpha*s_z).
+                # alpha=y2 belongs to min; beta=z2 belongs to max.
+                return rho * max_vals[1], rho * min_vals[2]
+            sy, sz = self._residuals(min_vals, max_vals)
+            return (self._penalty(sy, method, rho, mu, lam),
+                    self._penalty(sz, method, rho, mu, lam))
+
+        @torch.no_grad()
+        def gradient(min_vals, max_vals):
+            gx, gy, gz = self._primal_gradients(*weights(min_vals, max_vals))
+            min_grads = [self.c + gx, self.d + lower_gradient + gy]
+            max_grads = [-lower_gradient + gz]
+            if method == "gcmo":
+                sy, sz = self._residuals(min_vals, max_vals)
+                min_grads.append(-rho * sz)
+                max_grads.append(rho * sy)
+            return min_grads, max_grads
+
+        @torch.no_grad()
+        def difference(old_min, old_max, new_min, new_max):
+            if method == "gcmo":
+                dwy = rho * (new_max[1]-old_max[1])
+                dwz = rho * (new_min[2]-old_min[2])
+            else:
+                old_wy, old_wz = weights(old_min, old_max)
+                new_wy, new_wz = weights(new_min, new_max)
+                dwy, dwz = new_wy-old_wy, new_wz-old_wz
+            # c, d and rho*d_tilde cancel before assembling new-minus-old.
+            dx, dy, dz = self._primal_gradients(dwy, dwz)
+            min_diff, max_diff = [dx, dy], [dz]
+            if method == "gcmo":
+                adx = self.a @ (new_min[0]-old_min[0])
+                min_diff.append(-rho * (adx + self.b @ (new_max[0]-old_max[0])))
+                max_diff.append(rho * (adx + self.b @ (new_min[1]-old_min[1])))
+            return min_diff, max_diff
+
+        return gradient, difference
+
+    @torch.no_grad()
+    def warm_start_value_and_grad(self, method, x_vals, rho, mu, lambda_k=None):
+        self._check_method(method, mu, lambda_k)
+        if rho <= 0 or mu <= 0:
+            raise ValueError("Warm-up rho and mu must be positive")
+        x, = x_vals
+        ax_minus_b = self.a @ x.detach().clone() - self.rhs
+        lam = None if lambda_k is None else lambda_k.detach().clone()
+        # SMO (9), p. 5, divides its saddle penalty by rho. FOP (30)
+        # and GCMO's quadratic warm-up both use mu*||[s]+||^2.
+        penalty_method = "smo" if method == "smo" else "fop"
+        divisor = rho if method == "smo" else 1.0
+
+        @torch.no_grad()
+        def value_and_grad(values):
+            z, = values
+            penalty, weight = self._penalty(
+                ax_minus_b + self.b @ z, penalty_method, 1.0, mu, lam,
+                with_value=True,
+            )
+            value = self.d_tilde @ z + penalty / divisor
+            gradient = self.d_tilde + (self.bt @ weight) / divisor
+            return value, [gradient]
+
+        return value_and_grad
+
+
 def upper_objective(x_vec, y_vec):
     return float((torch.dot(C, x_vec) + torch.dot(D, y_vec)).item())
 
@@ -320,6 +587,17 @@ def lower_objective(x_vec, z_vec):
 
 def constraint_residual(x_vec, z_vec):
     return A_MAT @ x_vec + B_MAT @ z_vec - B_VEC
+
+
+@torch.no_grad()
+def lower_primal_dual_gap(x_vec, y_vec, lambda_vec, lagrange_bound):
+    """Unscaled equation-(24) gap for the linear lower problem and dual box."""
+    residual = constraint_residual(x_vec, y_vec)
+    primal_value = torch.dot(D_TILDE, y_vec) + lagrange_bound * positive_part(residual).sum()
+    dual_value = torch.dot(lambda_vec, A_MAT @ x_vec - B_VEC) - torch.abs(
+        D_TILDE + B_MAT.T @ lambda_vec
+    ).sum()
+    return float((primal_value - dual_value).item())
 
 
 def feasibility_norm(x_vec, z_vec):
@@ -479,6 +757,7 @@ def build_gcmo_diagnostics(x_vec, y_vec, z_vec, lambda_vec, z_lambda_vec, solver
     solver_stats = solver_result["solver_stats"]
     bound_tol = 1e-10
     diagnostics = {
+        "primal_dual_gap": lower_primal_dual_gap(x_vec, y_vec, lambda_vec, lagrange_bound),
         "upper_obj": upper_objective(x_vec, y_vec),
         "y_feas": y_metrics["feas"],
         "y_lower_obj": y_metrics["lower_obj"],
@@ -516,7 +795,7 @@ def run_single_instance_fop(instance_idx, problem_size, instance_position, num_i
     run_finished = False
 
     x_prev = torch.zeros(N)
-    y_prev = torch.zeros(M)
+    y_prev = Y_HAT.detach().clone()
     initial_objective = upper_objective(x_prev, y_prev)
     log_history(run, {"instance/initial_objective": initial_objective})
     gtilde_hi = compute_gtilde_hi()
@@ -555,16 +834,24 @@ def run_single_instance_fop(instance_idx, problem_size, instance_position, num_i
             run,
             {
                 "fop/stage/index": payload["stage_index"],
+                "fop/stage/budget_exhausted": payload.get("budget_exhausted"),
+                "fop/stage/termination_reason": payload.get("termination_reason"),
                 "fop/stage/rho": payload["rho_k"],
                 "fop/stage/mu": payload["mu_k"],
                 "fop/stage/epsilon": payload["epsilon_k"],
+                "fop/stage/lip_h": payload["lip_h"],
+                "fop/stage/computed_lip_h": payload["computed_lip_h"],
+                "fop/stage/lip_scale": payload["lip_scale"],
+                "fop/stage/lip_override": payload["lip_override"],
                 "fop/warm_start/num_iters": payload["warm_start_iters"],
                 "fop/warm_start/target_num_iters": payload["warm_start_target_iters"],
                 "fop/warm_start/capped": float(payload["warm_start_capped"]),
+                **warm_start_metrics("fop", payload["warm_start_stats"]),
                 "fop/subproblem/num_outer_iters": payload["subproblem_stats"]["num_outer_iters"],
                 "fop/subproblem/num_inner_iters": payload["subproblem_stats"]["num_inner_iters"],
                 "fop/subproblem/final_diff": payload["subproblem_stats"]["final_diff"],
                 "fop/subproblem/terminated": float(payload["subproblem_stats"]["terminated"]),
+                **subproblem_status_metrics("fop", payload["subproblem_stats"]),
                 "fop/post/upper_obj": metrics["upper_obj"],
                 "fop/post/feas": metrics["feas"],
                 "fop/post/lower_gap": metrics["lower_gap"],
@@ -575,7 +862,8 @@ def run_single_instance_fop(instance_idx, problem_size, instance_position, num_i
         if VERBOSE:
             print(
                 f"  Instance {instance_label}: outer={payload['stage_index']} "
-                f"warm_start_iters={payload['warm_start_iters']}/{payload['warm_start_target_iters']} "
+                f"warm_start_iters={payload['warm_start_iters']} "
+                f"warm_start_estimate={payload['warm_start_target_iters']} "
                 f"warm_start_capped={int(payload['warm_start_capped'])} "
                 f"solver_outer={payload['subproblem_stats']['num_outer_iters']} "
                 f"feas={metrics['feas']:.3e} gap={metrics['lower_gap']:.3e} upper={metrics['upper_obj']:.3e}",
@@ -583,9 +871,10 @@ def run_single_instance_fop(instance_idx, problem_size, instance_position, num_i
             )
 
     try:
-        x_tensor = x_prev.clone().requires_grad_(True)
-        y_tensor = y_prev.clone().requires_grad_(True)
-        solver_result = optimize_bilevel_constrained_fop_practical(
+        oracle = LinearCBLOOracle.from_current_instance()
+        x_tensor = x_prev.clone()
+        y_tensor = y_prev.clone()
+        solver_result = optimize_bilevel_contrained_fop_practical(
             [x_tensor],
             [y_tensor],
             upper_smooth,
@@ -603,8 +892,12 @@ def run_single_instance_fop(instance_idx, problem_size, instance_position, num_i
             final_epsilon=FINAL_EPS,
             feas_tol=FEAS_TOL,
             lower_gap_tol=LOWER_GAP_TOL,
-            subproblem_max_iter=ALG4_MAX_ITERS,
-            max_outer_iters=MAX_OUTER_ITERS,
+            warm_start_max_iter=FOP_AGD_MAX_ITERS,
+            warm_start_linear_minimizer=box_linear_minimizer,
+            subproblem_max_iter=FOP_NCWC_MAX_ITERS,
+            max_outer_iters=FOP_MAX_STAGES,
+            scsc_max_iter=FOP_SCSC_MAX_OUTER_ITERS,
+            scsc_max_inner_iter=FOP_SCSC_MAX_INNER_ITERS,
             objective_func=upper_smooth,
             metrics_func=evaluate_iterate,
             evaluate_iterate=evaluate_iterate,
@@ -613,8 +906,15 @@ def run_single_instance_fop(instance_idx, problem_size, instance_position, num_i
             verbose=VERBOSE,
             log_every=SOLVER_LOG_EVERY,
             outer_desc=f"Instance {instance_label}",
+            lip_scale=FOP_LIP_SCALE,
+            saddle_gradient_factory=partial(oracle.saddle_gradients, "fop"),
+            warm_start_value_and_grad_factory=partial(oracle.warm_start_value_and_grad, "fop"),
+            box_bounds=(-1.0, 1.0) if FOP_STABLE_BOX_RESIDUAL else None,
         )
 
+        if not solver_result["terminated"]:
+            run_finished = True
+            fail_incomplete_instance(run, "fop", solver_result, instance_label, initial_objective, start_time)
         final_metrics = solver_result["final_metrics"]
         if solver_result["terminated"] and final_metrics is not None:
             elapsed = time.perf_counter() - start_time
@@ -650,7 +950,7 @@ def run_single_instance_fop(instance_idx, problem_size, instance_position, num_i
         )
         run_finished = True
         raise RuntimeError(
-            f"Instance {instance_label} did not satisfy the stopping rule after {MAX_OUTER_ITERS} outer iterations"
+            f"Instance {instance_label} did not satisfy the stopping rule after {FOP_MAX_STAGES} stages"
         )
     except Exception:
         if not run_finished:
@@ -672,7 +972,7 @@ def run_single_instance_smo(instance_idx, problem_size, instance_position, num_i
     start_time = time.perf_counter()
     run_finished = False
     initial_x = torch.zeros(N)
-    initial_y = torch.zeros(M)
+    initial_y = Y_HAT.detach().clone()
     initial_objective = upper_objective(initial_x, initial_y)
     log_history(run, {"instance/initial_objective": initial_objective})
     gtilde_hi = compute_gtilde_hi()
@@ -697,6 +997,10 @@ def run_single_instance_smo(instance_idx, problem_size, instance_position, num_i
             "rho": payload["rho_k"],
             "mu": payload["mu_k"],
             "lambda_norm": payload["lambda_norm"],
+            "lip_h": payload["lip_h"],
+            "computed_lip_h": payload["computed_lip_h"],
+            "lip_scale": payload["lip_scale"],
+            "lip_override": payload["lip_override"],
             "y_feas": y_metrics["feas"],
             "y_lower_gap": y_metrics["lower_gap"], # \tilde f(x,y) - \tilde f^*(x)
             "z_feas": z_metrics["feas"],
@@ -710,17 +1014,25 @@ def run_single_instance_smo(instance_idx, problem_size, instance_position, num_i
         stage_diagnostics.append(stage_diag)
         metrics = {
             "smo/stage/index": stage_diag["stage_index"],
+            "smo/stage/budget_exhausted": payload.get("budget_exhausted"),
+            "smo/stage/termination_reason": payload.get("termination_reason"),
             "smo/stage/epsilon": stage_diag["epsilon"],
             "smo/stage/rho": stage_diag["rho"],
             "smo/stage/mu": stage_diag["mu"],
             "smo/stage/lambda_norm": stage_diag["lambda_norm"],
+            "smo/stage/lip_h": stage_diag["lip_h"],
+            "smo/stage/computed_lip_h": stage_diag["computed_lip_h"],
+            "smo/stage/lip_scale": stage_diag["lip_scale"],
+            "smo/stage/lip_override": stage_diag["lip_override"],
             "smo/warm_start/num_iters": payload["warm_start_iters"],
             "smo/warm_start/target_num_iters": payload["warm_start_target_iters"],
             "smo/warm_start/capped": float(payload["warm_start_capped"]),
+            **warm_start_metrics("smo", payload["warm_start_stats"]),
             "smo/subproblem/num_outer_iters": stage_diag["subproblem_num_outer_iters"],
             "smo/subproblem/num_inner_iters": stage_diag["subproblem_num_inner_iters"],
             "smo/subproblem/final_diff": stage_diag["subproblem_final_diff"],
             "smo/subproblem/terminated": stage_diag["subproblem_terminated"],
+            **subproblem_status_metrics("smo", payload["subproblem_stats"]),
             "smo/post/upper_obj": upper_objective(x_curr, y_curr),
             "smo/post/y_feas": stage_diag["y_feas"],
             "smo/post/y_lower_gap": stage_diag["y_lower_gap"],
@@ -752,8 +1064,9 @@ def run_single_instance_smo(instance_idx, problem_size, instance_position, num_i
         }
 
     try:
-        x_tensor = initial_x.clone().requires_grad_(True)
-        y_tensor = initial_y.clone().requires_grad_(True)
+        oracle = LinearCBLOOracle.from_current_instance()
+        x_tensor = initial_x.clone()
+        y_tensor = initial_y.clone()
         solver_result = optimize_bilevel_constrained_smo(
             [x_tensor],
             [y_tensor],
@@ -771,15 +1084,27 @@ def run_single_instance_smo(instance_idx, problem_size, instance_position, num_i
             epsilon=SMO_EPS,
             tau=SMO_TAU,
             epsilon_0=SMO_EPSILON_0,
-            subproblem_max_iter=SMO_SUBPROBLEM_MAX_ITERS,
+            warm_start_max_iter=SMO_AGD_MAX_ITERS,
+            warm_start_linear_minimizer=box_linear_minimizer,
+            subproblem_max_iter=SMO_NCWC_MAX_ITERS,
+            scsc_max_iter=SMO_SCSC_MAX_OUTER_ITERS,
+            scsc_max_inner_iter=SMO_SCSC_MAX_INNER_ITERS,
+            max_outer_iters=SMO_MAX_STAGES,
             stage_callback=stage_callback,
             verbose=VERBOSE,
             log_every=SOLVER_LOG_EVERY,
             objective_func=upper_smooth,
             metrics_func=evaluate_ncwc_iterate,
             progress_callback=ncwc_progress_callback,
+            lip_scale=SMO_LIP_SCALE,
+            saddle_gradient_factory=partial(oracle.saddle_gradients, "smo"),
+            warm_start_value_and_grad_factory=partial(oracle.warm_start_value_and_grad, "smo"),
+            box_bounds=(-1.0, 1.0) if SMO_STABLE_BOX_RESIDUAL else None,
         )
 
+        if not solver_result["terminated"]:
+            run_finished = True
+            fail_incomplete_instance(run, "smo", solver_result, instance_label, initial_objective, start_time)
         x_final = x_tensor.detach().clone()
         y_final = y_tensor.detach().clone()
         z_final = solver_result["z_eps"][0]
@@ -836,6 +1161,7 @@ def run_single_instance_smo(instance_idx, problem_size, instance_position, num_i
                 f"last_subproblem_outer={diagnostics.get('last_subproblem_num_outer_iters')}, "
                 f"last_subproblem_diff={diagnostics.get('last_subproblem_final_diff')}"
             )
+            raise RuntimeError(f"Instance {instance_label} SMO failed the feasibility/optimality stop check")
 
         result = {
             "initial_objective": initial_objective,
@@ -886,7 +1212,7 @@ def run_single_instance_gcmo(instance_idx, problem_size, instance_position, num_
     start_time = time.perf_counter()
     run_finished = False
     initial_x = torch.zeros(N)
-    initial_y = torch.zeros(M)
+    initial_y = Y_HAT.detach().clone()
     initial_objective = upper_objective(initial_x, initial_y)
     log_history(run, {"instance/initial_objective": initial_objective})
     gtilde_hi = compute_gtilde_hi()
@@ -912,8 +1238,9 @@ def run_single_instance_gcmo(instance_idx, problem_size, instance_position, num_
         }
 
     try:
-        x_tensor = initial_x.clone().requires_grad_(True)
-        y_tensor = initial_y.clone().requires_grad_(True)
+        oracle = LinearCBLOOracle.from_current_instance()
+        x_tensor = initial_x.clone()
+        y_tensor = initial_y.clone()
         solver_result = optimize_bilevel_constrained_minimax(
             [x_tensor],
             [y_tensor],
@@ -923,6 +1250,7 @@ def run_single_instance_gcmo(instance_idx, problem_size, instance_position, num_
             lagrange_bound=GCMO_LAGRANGE_BOUND,
             prox_x=prox_box,
             prox_y1=prox_box,
+            box_bounds=(-1.0, 1.0),
             D_y=d_y,
             L_grad_f1=0.0,
             L_grad_ftilde1=0.0,
@@ -930,15 +1258,38 @@ def run_single_instance_gcmo(instance_idx, problem_size, instance_position, num_
             L_gtilde=CURRENT_L_G,
             gtilde_hi=gtilde_hi,
             epsilon=GCMO_EPS,
-            max_iter=GCMO_MAX_ITERS,
+            max_iter=GCMO_NCWC_MAX_ITERS,
+            scsc_max_iter=GCMO_SCSC_MAX_OUTER_ITERS,
+            scsc_max_inner_iter=GCMO_SCSC_MAX_INNER_ITERS,
             verbose=VERBOSE,
             log_every=SOLVER_LOG_EVERY,
             objective_func=upper_smooth,
             metrics_func=evaluate_ncwc_iterate,
             progress_callback=ncwc_progress_callback,
             lip_override=GCMO_LIP_OVERRIDE,
+            saddle_gradient_factory=partial(oracle.saddle_gradients, "gcmo"),
+            warm_start_value_and_grad_factory=partial(oracle.warm_start_value_and_grad, "gcmo"),
+            warm_start_lower=True,
+            warm_start_max_iter=GCMO_AGD_MAX_ITERS,
+            warm_start_D_y=compute_d_y(),
+            warm_start_linear_minimizer=box_linear_minimizer,
+            primal_dual_gap_func=lambda x_vals, y_vals, lambda_vec: lower_primal_dual_gap(
+                x_vals[0], y_vals[0], lambda_vec, GCMO_LAGRANGE_BOUND,
+            ),
+            warm_start_callback=lambda stats: log_stage(
+                run,
+                {
+                    "gcmo/stage/index": 0,
+                    **warm_start_metrics("gcmo", stats),
+                    "gcmo/warm_start/primal_dual_gap": stats["primal_dual_gap"],
+                },
+                step=0,
+            ),
         )
 
+        if not solver_result["terminated"]:
+            run_finished = True
+            fail_incomplete_instance(run, "gcmo", solver_result, instance_label, initial_objective, start_time)
         x_final = x_tensor.detach().clone()
         y_final = y_tensor.detach().clone()
         z_final = solver_result["z_eps"][0]
@@ -968,6 +1319,8 @@ def run_single_instance_gcmo(instance_idx, problem_size, instance_position, num_
             run,
             {
                 "gcmo/stage/index": 0,
+                "gcmo/stage/budget_exhausted": solver_result.get("budget_exhausted"),
+                "gcmo/stage/termination_reason": solver_result.get("termination_reason"),
                 "gcmo/stage/rho": solver_result["rho"],
                 "gcmo/stage/epsilon": GCMO_EPS,
                 "gcmo/stage/epsilon_0": solver_result["epsilon_0"],
@@ -977,7 +1330,9 @@ def run_single_instance_gcmo(instance_idx, problem_size, instance_position, num_
                 "gcmo/subproblem/num_inner_iters": diagnostics["subproblem_num_inner_iters"],
                 "gcmo/subproblem/final_diff": diagnostics["subproblem_final_diff"],
                 "gcmo/subproblem/terminated": diagnostics["subproblem_terminated"],
+                **subproblem_status_metrics("gcmo", solver_result["solver_stats"]),
                 "gcmo/post/upper_obj": diagnostics["upper_obj"],
+                "gcmo/post/primal_dual_gap": diagnostics["primal_dual_gap"],
                 "gcmo/post/y_feas": diagnostics["y_feas"],
                 "gcmo/post/y_lower_gap": diagnostics["y_lower_gap"],
                 "gcmo/post/z_feas": diagnostics["z_feas"],
@@ -1041,6 +1396,7 @@ def run_single_instance_gcmo(instance_idx, problem_size, instance_position, num_
                 f"subproblem_outer={diagnostics['subproblem_num_outer_iters']}, "
                 f"subproblem_diff={diagnostics['subproblem_final_diff']}"
             )
+            raise RuntimeError(f"Instance {instance_label} GCMO failed the feasibility/optimality stop check")
 
         result = {
             "initial_objective": initial_objective,

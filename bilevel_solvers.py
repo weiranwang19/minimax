@@ -2,17 +2,15 @@ import math
 import torch
 import tqdm
 from utils import clone_vals, assign_vals
-from minimax import optimize_NCWC
+from minimax import optimize_NCWC, _validate_box_bound_pair, _validate_iteration_budget
 from agd import agd_convex
 
 
 def _expand_prox_spec(prox_func, count):
-    """Repeat a single proximal operator so it matches a parameter block list."""
     return [prox_func] * count
 
 
 def _scale_prox_spec(prox_func, scale):
-    """Scale a prox coefficient for paper objectives containing `scale * f2`."""
 
     def scaled(v, coeff):
         return prox_func(v, scale * coeff)
@@ -21,7 +19,6 @@ def _scale_prox_spec(prox_func, scale):
 
 
 def _adapt_ncwc_objective(objective_func, num_x, num_y):
-    """Adapt a bilevel `(x, y)` monitor to the concatenated NCWC min block."""
     if objective_func is None:
         return None
     if not callable(objective_func):
@@ -38,7 +35,6 @@ def _adapt_ncwc_objective(objective_func, num_x, num_y):
 
 
 def _adapt_ncwc_metrics(metrics_func, num_x, num_y):
-    """Adapt bilevel metrics to `optimize_NCWC`'s `(min_block, max_block)` API."""
     if metrics_func is None:
         return None
     if not callable(metrics_func):
@@ -55,13 +51,47 @@ def _adapt_ncwc_metrics(metrics_func, num_x, num_y):
 
 
 def _positive_part(v):
-    """Elementwise positive part, matching `[g]_+` in the FOP/SMO papers."""
     return torch.clamp(v, min=0.0)
 
 
 def positive_part_norm_sq(v):
-    """Squared norm of `[v]_+`, used by quadratic penalty terms."""
     return torch.sum(torch.square(_positive_part(v)))
+
+
+def _validate_lip_override(lip_override):
+    if lip_override is None:
+        return None
+    lip_override = float(lip_override)
+    if not math.isfinite(lip_override) or lip_override <= 0:
+        raise ValueError(f"Invalid lip_override: {lip_override}")
+    return lip_override
+
+
+def _validate_lip_scale(lip_scale):
+    if lip_scale is None:
+        return None
+    lip_scale = float(lip_scale)
+    if not math.isfinite(lip_scale) or lip_scale <= 0:
+        raise ValueError(f"Invalid lip_scale: {lip_scale}")
+    return lip_scale
+
+
+def _validate_solver_budgets(ncwc_max_iter, scsc_max_iter, scsc_max_inner_iter, warm_start_max_iter=None):
+    _validate_iteration_budget(ncwc_max_iter, "NCWC max_iter")
+    _validate_iteration_budget(scsc_max_iter, "scsc_max_iter", allow_none=True)
+    _validate_iteration_budget(scsc_max_inner_iter, "scsc_max_inner_iter", allow_none=True, allow_zero=True)
+    _validate_iteration_budget(warm_start_max_iter, "warm_start_max_iter", allow_none=True, allow_zero=True)
+
+
+def _solver_status(stats):
+    """Propagate NCWC status while supporting older result dictionaries."""
+    return {
+        "terminated": bool(stats["terminated"]),
+        "termination_reason": stats.get("termination_reason") or (
+            "converged" if stats["terminated"] else "inner_solver_failed"
+        ),
+        "budget_exhausted": stats.get("budget_exhausted"),
+    }
 
 
 def optimize_bilevel_constrained_fop(
@@ -86,26 +116,35 @@ def optimize_bilevel_constrained_fop(
     objective_func=None,
     metrics_func=None,
     progress_callback=None,
+    lip_scale=None,
+    saddle_gradient_factory=None,
+    box_bounds=None,
+    scsc_max_iter=None,
+    scsc_max_inner_iter=None,
 ):
     """
-    Solve the constrained bilevel penalty subproblem from FOP Algorithm 4.
+    Algorithm 4 for the constrained penalty reformulation.
 
-    FOP Algorithm 4 has one computational line: call Algorithm 6 with
-    rho = epsilon^{-1}, mu = epsilon^{-2}, epsilon_0 = epsilon^{5/2}, and
-    L_grad_h set to the Lipschitz bound used below.  This function builds the
-    smooth part of P_{rho,mu} from FOP equations (33)-(34), concatenates the
-    minimization block as `(x, y)`, initializes the maximization block `z` from
-    `y`, and delegates the line-1 minimax solve to `optimize_NCWC`.
+    The minimization block is the concatenated tuple (x, y), and z is the
+    internal maximization block initialized from y.
+    When provided, lip_scale sets the NCWC coefficient to
+    lip_scale * rho * mu; it does not change the analytic coefficient reported
+    as computed_lip_h.
 
-    The nonsmooth terms f2(x), rho * ftilde2(y), and -rho * ftilde2(z) are
-    represented through the scaled proximal operators passed to `optimize_NCWC`.
-    The returned `z_eps` is the auxiliary maximizer from the paper; `params_x`
-    and `params_y` are updated in place to the returned `(x_epsilon,y_epsilon)`.
+    h_alg4 computes the smooth part.
+    max_iter limits NCWC steps. scsc_max_iter independently limits SCSC
+    outer steps, and scsc_max_inner_iter optionally limits each inner loop.
+    An optional saddle_gradient_factory(rho, mu) returns gradient and
+    new-minus-old gradient-difference callbacks for h_alg4, with min block
+    params_x + params_y and max block z. box_bounds explicitly declares
+    that both blocks' prox operators project onto the same scalar box.
     """
+    _validate_solver_budgets(max_iter, scsc_max_iter, scsc_max_inner_iter)
     # if epsilon <= 0 or epsilon > 0.25:
     #     raise ValueError(f"Algorithm 4 requires epsilon in (0, 1/4], got {epsilon}")
     if D_y <= 0:
         raise ValueError(f"Invalid D_y: {D_y}")
+    lip_scale = _validate_lip_scale(lip_scale)
     if log_every <= 0:
         raise ValueError(f"Invalid log_every: {log_every}")
 
@@ -116,17 +155,13 @@ def optimize_bilevel_constrained_fop(
     if not params_y:
         raise ValueError("params_y must contain at least one tensor")
 
-    # FOP Algorithm 4 input: rho = epsilon^{-1}, mu = epsilon^{-2},
-    # epsilon_0 = epsilon^{5/2}.
     rho = epsilon ** -1
     mu = epsilon ** -2
     epsilon_0 = epsilon ** (5 / 2)
 
-    # Algorithm 4 line 1 uses y_0 as Algorithm 6's initial maximization block.
-    z_params = clone_vals(params_y, requires_grad=True)
+    z_params = clone_vals(params_y, requires_grad=saddle_gradient_factory is None)
 
     def h_alg4():
-        # FOP equations (33)-(34): smooth part of P_{rho,mu}(x,y,z).
         upper_term = upper_smooth(params_x, params_y)
         lower_y = lower_smooth(params_x, params_y)
         lower_z = lower_smooth(params_x, z_params)
@@ -149,12 +184,18 @@ def optimize_bilevel_constrained_fop(
     ncwc_objective = _adapt_ncwc_objective(objective_func, len(params_x), len(params_y))
     ncwc_metrics = _adapt_ncwc_metrics(metrics_func, len(params_x), len(params_y))
 
-    # FOP Algorithm 4 line 1: L_grad_h for the Algorithm 6 call.
-    lip_h = (
+
+    computed_lip_h = (
         L_grad_f1
         + 2 * rho * L_grad_ftilde1
         + 4 * rho * mu * (gtilde_hi * L_grad_gtilde + L_gtilde ** 2)
     )
+    lip_override = None if lip_scale is None else lip_scale * rho * mu
+    lip_h = computed_lip_h if lip_override is None else lip_override
+
+    gradient_func = gradient_difference_func = None
+    if saddle_gradient_factory is not None:
+        gradient_func, gradient_difference_func = saddle_gradient_factory(rho, mu)
 
     solver_stats = optimize_NCWC(
         params_hat,
@@ -168,11 +209,16 @@ def optimize_bilevel_constrained_fop(
         epsilon_0,
         lr=lr,
         max_iter=max_iter,
+        subproblem_max_iter=scsc_max_iter,
+        subproblem_max_inner_iter=scsc_max_inner_iter,
         verbose=verbose,
         log_every=log_every,
         objective_func=ncwc_objective,
         metrics_func=ncwc_metrics,
         progress_callback=progress_callback,
+        gradient_func=gradient_func,
+        gradient_difference_func=gradient_difference_func,
+        box_bounds=box_bounds,
     )
 
     return {
@@ -180,11 +226,16 @@ def optimize_bilevel_constrained_fop(
         "rho": rho,
         "mu": mu,
         "epsilon_0": epsilon_0,
+        "lip_h": lip_h,
+        "computed_lip_h": computed_lip_h,
+        "lip_scale": lip_scale,
+        "lip_override": lip_override,
         "solver_stats": solver_stats,
+        **_solver_status(solver_stats),
     }
 
 
-def optimize_bilevel_constrained_fop_practical(
+def optimize_bilevel_contrained_fop_practical(
     params_x,
     params_y,
     upper_smooth,
@@ -214,9 +265,22 @@ def optimize_bilevel_constrained_fop_practical(
     verbose=False,
     log_every=1,
     outer_desc=None,
+    lip_scale=None,
+    warm_start_linear_minimizer=None,
+    saddle_gradient_factory=None,
+    box_bounds=None,
+    warm_start_value_and_grad_factory=None,
+    scsc_max_iter=None,
+    scsc_max_inner_iter=None,
 ):
     """
-    Practical staged variant around the FOP Algorithm 4 subproblem.
+    Practical outer-loop wrapper for FOP that warm-starts each stage and
+    repeatedly calls the constrained FOP subproblem solver with one shared
+    lip_scale across all stages.
+    Optional warm_start_value_and_grad_factory(x_vals, rho, mu) supplies an
+    AGD value/gradient callback; absent factories preserve autograd.
+    max_outer_iters limits stages, subproblem_max_iter limits NCWC steps
+    per stage, and scsc_max_iter/scsc_max_inner_iter limit the nested solver.
     """
     if base_rho <= 0:
         raise ValueError(f"Invalid base_rho: {base_rho}")
@@ -224,12 +288,9 @@ def optimize_bilevel_constrained_fop_practical(
         raise ValueError(f"Invalid final_epsilon: {final_epsilon}")
     if D_y <= 0:
         raise ValueError(f"Invalid D_y: {D_y}")
-    if warm_start_max_iter is not None and warm_start_max_iter < 0:
-        raise ValueError(f"Invalid warm_start_max_iter: {warm_start_max_iter}")
-    if subproblem_max_iter <= 0:
-        raise ValueError(f"Invalid subproblem_max_iter: {subproblem_max_iter}")
-    if max_outer_iters <= 0:
-        raise ValueError(f"Invalid max_outer_iters: {max_outer_iters}")
+    lip_scale = _validate_lip_scale(lip_scale)
+    _validate_solver_budgets(subproblem_max_iter, scsc_max_iter, scsc_max_inner_iter, warm_start_max_iter)
+    _validate_iteration_budget(max_outer_iters, "max_outer_iters")
     if log_every <= 0:
         raise ValueError(f"Invalid log_every: {log_every}")
     if evaluate_iterate is not None and not callable(evaluate_iterate):
@@ -252,6 +313,7 @@ def optimize_bilevel_constrained_fop_practical(
     history = []
     final_metrics = None
     terminated = False
+    termination_reason = budget_exhausted = None
     last_solver_result = None
 
     for k in tqdm.trange(
@@ -260,8 +322,7 @@ def optimize_bilevel_constrained_fop_practical(
         unit="outer iter",
         disable=outer_desc is None,
     ):
-        # Dynamic schedule for the practical variant; this is outside the
-        # literal FOP Algorithm 4 pseudocode.
+        # TODO: following original paper, we should use k-1, but it contradicts epsilon constraint in pseudocode
         rho_k = base_rho ** (k - 1)
         mu_k = rho_k ** 2
         epsilon_k = 1.0 / rho_k
@@ -273,15 +334,16 @@ def optimize_bilevel_constrained_fop_practical(
             )
 
         def smooth_lower_penalty(z_vars):
-            # Warm-start analogue of FOP Remark 4(i), replacing ftilde by the
-            # quadratic-penalty lower objective P_tilde_mu.
             constraint_z = lower_constraints(params_x, z_vars)
             penalty = mu_k * positive_part_norm_sq(constraint_z)
             return lower_smooth(params_x, z_vars) + penalty
 
-        # Lipschitz estimate for the warm-start lower penalty gradient.
+        # TODO: if L_hat_k is None, use provided initial value * base_rho**k
         L_hat_k = L_grad_ftilde1 + 2.0 * mu_k * (L_gtilde ** 2 + gtilde_hi * L_grad_gtilde)
 
+        warm_value_and_grad = None
+        if warm_start_value_and_grad_factory is not None:
+            warm_value_and_grad = warm_start_value_and_grad_factory(params_x, rho_k, mu_k)
         y_init, warm_start_stats = agd_convex(
             clone_vals(params_y),
             smooth_lower_penalty,
@@ -290,11 +352,13 @@ def optimize_bilevel_constrained_fop_practical(
             epsilon_k,
             D_y,
             max_iter=warm_start_max_iter,
+            linear_minimizer=warm_start_linear_minimizer,
+            value_and_grad_func=warm_value_and_grad,
         )
         y_tilde_prev = clone_vals(y_init)
 
-        x_stage = clone_vals(params_x, requires_grad=True)
-        y_stage = clone_vals(y_tilde_prev, requires_grad=True)
+        x_stage = clone_vals(params_x, requires_grad=saddle_gradient_factory is None)
+        y_stage = clone_vals(y_tilde_prev, requires_grad=saddle_gradient_factory is None)
         last_solver_result = optimize_bilevel_constrained_fop(
             x_stage,
             y_stage,
@@ -317,6 +381,11 @@ def optimize_bilevel_constrained_fop_practical(
             objective_func=objective_func,
             metrics_func=metrics_func,
             progress_callback=progress_callback,
+            lip_scale=lip_scale,
+            saddle_gradient_factory=saddle_gradient_factory,
+            box_bounds=box_bounds,
+            scsc_max_iter=scsc_max_iter,
+            scsc_max_inner_iter=scsc_max_inner_iter,
         )
         assign_vals(params_x, x_stage)
         assign_vals(params_y, y_stage)
@@ -332,9 +401,21 @@ def optimize_bilevel_constrained_fop_practical(
             "warm_start_iters": warm_start_stats["num_iters"],
             "warm_start_target_iters": warm_start_stats["target_num_iters"],
             "warm_start_capped": warm_start_stats["capped"],
+            "warm_start_stats": warm_start_stats,
+            "lip_h": last_solver_result["lip_h"],
+            "computed_lip_h": last_solver_result["computed_lip_h"],
+            "lip_scale": last_solver_result["lip_scale"],
+            "lip_override": last_solver_result["lip_override"],
             "subproblem_stats": last_solver_result["solver_stats"],
             "metrics": metrics,
+            "termination_reason": _solver_status(last_solver_result["solver_stats"])["termination_reason"],
+            "budget_exhausted": last_solver_result["solver_stats"].get("budget_exhausted"),
         }
+        target_met = epsilon_k <= final_epsilon
+        if metrics is not None and feas_tol is not None and lower_gap_tol is not None:
+            target_met = target_met and metrics["feas"] <= feas_tol and metrics["lower_gap"] <= lower_gap_tol
+        if last_solver_result["solver_stats"]["terminated"] and not target_met and k + 1 == max_outer_iters:
+            stage_summary.update(termination_reason="max_stages", budget_exhausted="stages")
         history.append(stage_summary)
 
         if stage_callback is not None:
@@ -346,20 +427,30 @@ def optimize_bilevel_constrained_fop_practical(
                 }
             )
 
-        if metrics is not None and feas_tol is not None and lower_gap_tol is not None:
-            if epsilon_k <= final_epsilon and metrics["feas"] <= feas_tol and metrics["lower_gap"] <= lower_gap_tol:
-                terminated = True
-                break
-        elif epsilon_k <= final_epsilon:
+        if not last_solver_result["solver_stats"]["terminated"]:
+            status = _solver_status(last_solver_result["solver_stats"])
+            termination_reason, budget_exhausted = status["termination_reason"], status["budget_exhausted"]
+            # break
+        if target_met:
             terminated = True
             break
 
+    if terminated:
+        termination_reason = "converged"
+    elif termination_reason is None:
+        termination_reason, budget_exhausted = "max_stages", "stages"
     return {
         "num_outer_iters": len(history),
         "terminated": terminated,
+        "termination_reason": termination_reason,
+        "budget_exhausted": budget_exhausted,
         "history": history,
         "final_metrics": final_metrics,
         "last_subproblem": last_solver_result,
+        "lip_h": last_solver_result["lip_h"],
+        "computed_lip_h": last_solver_result["computed_lip_h"],
+        "lip_scale": lip_scale,
+        "lip_override": last_solver_result["lip_override"],
     }
 
 
@@ -390,23 +481,30 @@ def optimize_bilevel_constrained_smo(
     objective_func=None,
     metrics_func=None,
     progress_callback=None,
+    lip_scale=None,
+    warm_start_linear_minimizer=None,
+    saddle_gradient_factory=None,
+    warm_start_value_and_grad_factory=None,
+    box_bounds=None,
+    scsc_max_iter=None,
+    scsc_max_inner_iter=None,
+    max_outer_iters=None,
 ):
     """
-    Run the SMO paper's sequential minimax outer loop for the sigma = 0 case.
+    Algorithm 1 for the constrained bilevel reformulation in the sigma = 0 case.
 
-    This function implements SMO Algorithm 1 for constrained bilevel problems
-    with a merely convex lower objective.  The main paper-line mapping is:
-
-    - line 1: iterate over k with eta_k = eta_0 * tau^k;
-    - line 2: call Algorithm A.1 through `agd_convex` to warm-start y_init for
-      the modified augmented lower problem in equation (9);
-    - line 3: call Algorithm B.2 through `optimize_NCWC` to solve the minimax
-      subproblem in equation (12);
-    - line 4: update lambda_{k+1} = [lambda_k + pi_k g(x_{k+1},z_{k+1})]_+;
-    - line 5: stop when eta_k <= epsilon.
-
-    In this implementation `mu_k` denotes the paper's constraint penalty
-    `pi_k`; `rho_k` keeps the paper's notation.
+    The solver owns the full SMO outer loop. It warm-starts each lower subproblem
+    with Algorithm A.1 and solves each minimax stage via the existing B.2-style
+    NCWC wrapper. When provided, lip_scale sets each stage's NCWC coefficient
+    to lip_scale * mu_k.
+    Optional saddle_gradient_factory(rho, mu, lambda_k) returns the two saddle
+    gradient callbacks. warm_start_value_and_grad_factory(x_vals, rho, mu,
+    lambda_k) returns the AGD callback. lambda_k is fixed during each solve.
+    Optional box_bounds=(lo, hi) enables the stable box residual at every
+    stage. All primal and auxiliary proximal operators must project onto
+    that same box. None retains the generic proximal residual.
+    subproblem_max_iter limits NCWC steps per stage. The scsc_* limits
+    independently control SCSC, and max_outer_iters optionally caps stages.
     """
     if epsilon <= 0:
         raise ValueError(f"Invalid epsilon: {epsilon}")
@@ -416,10 +514,9 @@ def optimize_bilevel_constrained_smo(
         raise ValueError(f"Invalid epsilon0: {epsilon_0}")
     if D_y <= 0:
         raise ValueError(f"Invalid D_y: {D_y}")
-    if subproblem_max_iter <= 0:
-        raise ValueError(f"Invalid subproblem_max_iter: {subproblem_max_iter}")
-    if warm_start_max_iter is not None and warm_start_max_iter < 0:
-        raise ValueError(f"Invalid warm_start_max_iter: {warm_start_max_iter}")
+    lip_scale = _validate_lip_scale(lip_scale)
+    _validate_solver_budgets(subproblem_max_iter, scsc_max_iter, scsc_max_inner_iter, warm_start_max_iter)
+    _validate_iteration_budget(max_outer_iters, "max_outer_iters", allow_none=True)
     if log_every <= 0:
         raise ValueError(f"Invalid log_every: {log_every}")
     if stage_callback is not None and not callable(stage_callback):
@@ -472,30 +569,30 @@ def optimize_bilevel_constrained_smo(
 
     history = []
     num_outer_iters = 0
+    terminated = False
+    termination_reason = budget_exhausted = None
     epsilon_k = epsilon_0
     ncwc_objective = _adapt_ncwc_objective(objective_func, len(params_x), len(params_y))
     ncwc_metrics = _adapt_ncwc_metrics(metrics_func, len(params_x), len(params_y))
     while True:
-        # SMO Algorithm 1 line 1: eta_k is named epsilon_k in this code.
-        # The paper's pi_k is named mu_k here.
         rho_k = epsilon_k ** -1
         mu_k = epsilon_k ** -3
         lambda_norm = float(torch.linalg.vector_norm(lambda_k).item())
 
         def smooth_lower_aug(z_vars):
-            # SMO equation (9), used by Algorithm 1 line 2.
             constraint_z = lower_constraints(params_x, z_vars)
             penalty = positive_part_norm_sq(lambda_k + mu_k * constraint_z) / (2.0 * rho_k * mu_k)
             return lower_smooth(params_x, z_vars) + penalty
 
-        # SMO equation (11): smoothness bound for the line-2 warm start.
+        # TODO: if L_hat_k is None, use provided initial value * 1/(tau**{2k})
         L_hat_k = (
             L_grad_ftilde1
             + (mu_k * (L_gtilde ** 2 + gtilde_hi * L_grad_gtilde) + lambda_norm * L_grad_gtilde) / rho_k
         )
 
-        # SMO Algorithm 1 line 2: Algorithm A.1 for the sigma = 0 lower
-        # warm-start problem.
+        warm_value_and_grad = None
+        if warm_start_value_and_grad_factory is not None:
+            warm_value_and_grad = warm_start_value_and_grad_factory(params_x, rho_k, mu_k, lambda_k)
         y_init, warm_start_stats = agd_convex(
             clone_vals(params_y),
             smooth_lower_aug,
@@ -504,16 +601,17 @@ def optimize_bilevel_constrained_smo(
             epsilon_k,
             D_y,
             max_iter=warm_start_max_iter,
+            linear_minimizer=warm_start_linear_minimizer,
+            value_and_grad_func=warm_value_and_grad,
         )
         assign_vals(params_y, y_init)
         if z_state is None:
             z_state = clone_vals(y_init)
 
-        z_params = clone_vals(z_state, requires_grad=True)
+        z_params = clone_vals(z_state, requires_grad=saddle_gradient_factory is None)
 
         def h_smo():
-            # SMO equation (8): smooth part of S(x, y, z, lambda_k; rho_k, pi_k)
-            # for the Algorithm 1 line-3 minimax subproblem.
+            # Eq (8)
             upper_term = upper_smooth(params_x, params_y)
             lower_y = lower_smooth(params_x, params_y)
             lower_z = lower_smooth(params_x, z_params)
@@ -525,38 +623,47 @@ def optimize_bilevel_constrained_smo(
 
         prox_hat = prox_x_funcs + [_scale_prox_spec(p, rho_k) for p in prox_y_funcs]
         prox_z = [_scale_prox_spec(p, rho_k) for p in prox_y_funcs]
-        # SMO equation (13): smoothness bound for Algorithm 1 line 3.
-        L_k = (
+        # Eq (11)
+        computed_lip_h = (
             L_grad_f1
             + 2.0 * rho_k * L_grad_ftilde1
             + 2.0 * mu_k * (L_gtilde ** 2 + gtilde_hi * L_grad_gtilde)
             + 2.0 * lambda_norm * L_grad_gtilde
         )
+        lip_override = None if lip_scale is None else lip_scale * mu_k
+        lip_h = computed_lip_h if lip_override is None else lip_override
         subproblem_epsilon_0 = epsilon_k / (2.0 * math.sqrt(mu_k))
 
-        # SMO Algorithm 1 line 3: Algorithm B.2, implemented by optimize_NCWC.
+        gradient_func = gradient_difference_func = None
+        if saddle_gradient_factory is not None:
+            gradient_func, gradient_difference_func = saddle_gradient_factory(rho_k, mu_k, lambda_k)
         subproblem_stats = optimize_NCWC(
             params_x + params_y,
             z_params,
             h_smo,
-            L_k,
+            lip_h,
             D_y,
             prox_hat,
             prox_z,
             epsilon_k,
             subproblem_epsilon_0,
             max_iter=subproblem_max_iter,
+            subproblem_max_iter=scsc_max_iter,
+            subproblem_max_inner_iter=scsc_max_inner_iter,
             verbose=verbose,
             log_every=log_every,
             objective_func=ncwc_objective,
             metrics_func=ncwc_metrics,
             progress_callback=progress_callback,
+            gradient_func=gradient_func,
+            gradient_difference_func=gradient_difference_func,
+            box_bounds=box_bounds,
         )
 
         z_state = clone_vals(z_params)
         with torch.no_grad():
-            # SMO Algorithm 1 line 4.
-            lambda_next = _positive_part(lambda_k + mu_k * lower_constraints(params_x, z_state)).detach()
+            lambda_next = (_positive_part(lambda_k + mu_k * lower_constraints(params_x, z_state)).detach()
+                           if subproblem_stats["terminated"] else lambda_k.clone())
         next_lambda_norm = float(torch.linalg.vector_norm(lambda_next).item())
 
         stage_summary = {
@@ -568,9 +675,19 @@ def optimize_bilevel_constrained_smo(
             "warm_start_iters": warm_start_stats["num_iters"],
             "warm_start_target_iters": warm_start_stats["target_num_iters"],
             "warm_start_capped": warm_start_stats["capped"],
+            "warm_start_stats": warm_start_stats,
+            "lip_h": lip_h,
+            "computed_lip_h": computed_lip_h,
+            "lip_scale": lip_scale,
+            "lip_override": lip_override,
             "subproblem_stats": subproblem_stats,
             "next_lambda_norm": next_lambda_norm,
+            "termination_reason": _solver_status(subproblem_stats)["termination_reason"],
+            "budget_exhausted": subproblem_stats.get("budget_exhausted"),
         }
+        if (subproblem_stats["terminated"] and epsilon_k > epsilon
+                and max_outer_iters is not None and num_outer_iters + 1 == max_outer_iters):
+            stage_summary.update(termination_reason="max_stages", budget_exhausted="stages")
         history.append(stage_summary)
         if stage_callback is not None:
             stage_callback(
@@ -585,9 +702,17 @@ def optimize_bilevel_constrained_smo(
             )
 
         num_outer_iters += 1
+        if not subproblem_stats["terminated"]:
+            status = _solver_status(subproblem_stats)
+            termination_reason, budget_exhausted = status["termination_reason"], status["budget_exhausted"]
+            # break
         lambda_k = lambda_next
-        # SMO Algorithm 1 line 5.
         if epsilon_k <= epsilon:
+            terminated = True
+            termination_reason = "converged"
+            break
+        if max_outer_iters is not None and num_outer_iters >= max_outer_iters:
+            termination_reason, budget_exhausted = "max_stages", "stages"
             break
         epsilon_k *= tau
 
@@ -595,8 +720,14 @@ def optimize_bilevel_constrained_smo(
         "z_eps": clone_vals(z_state),
         "lambda": lambda_k.clone().detach(),
         "num_outer_iters": num_outer_iters,
-        "terminated": True,
+        "terminated": terminated,
+        "termination_reason": termination_reason,
+        "budget_exhausted": budget_exhausted,
         "history": history,
+        "lip_h": history[-1]["lip_h"],
+        "computed_lip_h": history[-1]["computed_lip_h"],
+        "lip_scale": lip_scale,
+        "lip_override": history[-1]["lip_override"],
     }
 
 
@@ -628,19 +759,36 @@ def optimize_bilevel_constrained_minimax(
         warm_start_max_iter=None,
         warm_start_D_y=None,
         warm_start_epsilon=None,
+        warm_start_linear_minimizer=None,
+        primal_dual_gap_func=None,
+        warm_start_callback=None,
+        saddle_gradient_factory=None,
+        warm_start_value_and_grad_factory=None,
+        box_bounds=None,
+        scsc_max_iter=None,
+        scsc_max_inner_iter=None,
 ):
     """
-    Proposed single-minimax method for the constrained penalty reformulation.
+    Our proposed method for the constrained penalty reformulation.
 
-    This method is not a numbered algorithm from either the FOP or SMO paper, so
-    the implementation below intentionally avoids paper-line annotations.  It
-    converts the constrained lower-level problem to a bounded Lagrangian
-    minimax formulation and solves one NCWC problem over the primal-dual block
-    `(x, y1, y2)` against the copied maximization block `(z1, z2)`.
+    Using the Lagrangian formulation of the lower level problem, we solve only one instance of NCWC problem.
+    Optional saddle_gradient_factory(rho) returns callbacks for min blocks
+    (x, y1, y2) and max blocks (z1, z2). Optional
+    warm_start_value_and_grad_factory(x_vals, rho, warm_mu) supplies AGD's
+    callback. Absent factories preserve the generic autograd path.
+    Optional box_bounds=(lo, hi) declares shared primal projection bounds
+    for x, y1 and z1; multiplier bounds [0, lagrange_bound] are appended
+    separately for the stable evaluation of SCSC's original projected residual.
+    Without metadata the residual uses the generic proximal quotients.
+    When warm_start_lower is enabled, initialize the lower primal-dual block
+    with AGD on a smooth quadratic-penalty lower subproblem.
 
-    When `warm_start_lower` is enabled, the lower primal-dual block is
-    initialized with AGD on a smooth quadratic-penalty lower subproblem before
-    the single NCWC solve.
+    primal_dual_gap_func(x_values, y_values, lambda_tensor) optionally evaluates
+    the unscaled lower primal-dual gap. warm_start_callback receives the AGD
+    statistics and initial gap before the main solve. Existing metrics_func
+    continues to receive only the x and primal y blocks.
+    max_iter limits NCWC steps; scsc_max_iter and scsc_max_inner_iter
+    independently limit the SCSC outer and innermost iterations.
     """
 
     if epsilon <= 0:
@@ -649,18 +797,20 @@ def optimize_bilevel_constrained_minimax(
         raise ValueError(f"Invalid lagrange_bound: {lagrange_bound}")
     if D_y <= 0:
         raise ValueError(f"Invalid D_y: {D_y}")
-    if lip_override is not None:
-        lip_override = float(lip_override)
-        if not math.isfinite(lip_override) or lip_override <= 0:
-            raise ValueError(f"Invalid lip_override: {lip_override}")
-    if warm_start_max_iter is not None and warm_start_max_iter < 0:
-        raise ValueError(f"Invalid warm_start_max_iter: {warm_start_max_iter}")
+    lip_override = _validate_lip_override(lip_override)
+    if box_bounds is not None:
+        box_bounds = _validate_box_bound_pair(box_bounds)
+    _validate_solver_budgets(max_iter, scsc_max_iter, scsc_max_inner_iter, warm_start_max_iter)
     if warm_start_D_y is not None and warm_start_D_y <= 0:
         raise ValueError(f"Invalid warm_start_D_y: {warm_start_D_y}")
     if warm_start_epsilon is not None and warm_start_epsilon <= 0:
         raise ValueError(f"Invalid warm_start_epsilon: {warm_start_epsilon}")
     if log_every <= 0:
         raise ValueError(f"Invalid log_every: {log_every}")
+    for name, callback in (("primal_dual_gap_func", primal_dual_gap_func),
+                           ("warm_start_callback", warm_start_callback)):
+        if callback is not None and not callable(callback):
+            raise TypeError(f"{name} must be callable")
 
     params_x = list(params_x)
     params_y1 = list(params_y1)
@@ -675,18 +825,20 @@ def optimize_bilevel_constrained_minimax(
     if len(prox_y1_funcs) != len(params_y1):
         raise ValueError(f"Expected {len(params_y1)} proximal operators for y, got {len(prox_y1_funcs)}")
 
+    # Note we are transforming the lower level problem into unconstrained minimax, so we use settings in Algorithm 2.
     rho = epsilon ** -1
     epsilon_0 = epsilon ** (3 / 2)
 
     # Apply lower constraint once to get the number of constraints.
     # The copy of y.
-    params_z1 = clone_vals(params_y1, requires_grad=True)
+    use_autograd = saddle_gradient_factory is None
+    params_z1 = clone_vals(params_y1, requires_grad=use_autograd)
     tmp = lower_constraints(params_x, params_y1)
     num_constraints = tmp.shape[0]
     # Create and initialize the Lagrange multipliers.
-    params_y2 = [torch.zeros_like(tmp).requires_grad_(True)]
+    params_y2 = [torch.zeros_like(tmp).requires_grad_(use_autograd)]
     # The copy of y2.
-    params_z2 = [torch.zeros_like(tmp).requires_grad_(True)]
+    params_z2 = [torch.zeros_like(tmp).requires_grad_(use_autograd)]
     # import pdb; pdb.set_trace()
     # prox operators for y2 and z2.
     def prox_lagrange_multipliers(v, coeff):
@@ -707,6 +859,9 @@ def optimize_bilevel_constrained_minimax(
         warm_L = L_grad_ftilde1 + 2.0 * warm_mu * (
             L_gtilde ** 2 + gtilde_hi * L_grad_gtilde
         )
+        warm_value_and_grad = None
+        if warm_start_value_and_grad_factory is not None:
+            warm_value_and_grad = warm_start_value_and_grad_factory(params_x, rho, warm_mu)
         y_init, warm_start_stats = agd_convex(
             clone_vals(params_y1),
             smooth_lower_penalty,
@@ -715,6 +870,8 @@ def optimize_bilevel_constrained_minimax(
             warm_epsilon,
             warm_D_y,
             max_iter=warm_start_max_iter,
+            linear_minimizer=warm_start_linear_minimizer,
+            value_and_grad_func=warm_value_and_grad,
         )
         warm_start_stats.update(
             {
@@ -728,11 +885,27 @@ def optimize_bilevel_constrained_minimax(
         assign_vals(params_z1, y_init)
         with torch.no_grad():
             lambda_init = prox_lagrange_multipliers(
-                warm_mu * _positive_part(lower_constraints(params_x, params_y1)),
+                2.0 * warm_mu * _positive_part(lower_constraints(params_x, params_y1)),
                 coeff=1.0,
             ).detach()
         assign_vals(params_y2, [lambda_init])
         assign_vals(params_z2, [lambda_init])
+
+    def evaluate_primal_dual_gap(x_vals, y_vals, lambda_vec):
+        with torch.no_grad():
+            gap = float(primal_dual_gap_func(x_vals, y_vals, lambda_vec))
+        if not math.isfinite(gap):
+            raise ValueError("Nonfinite lower primal-dual gap")
+        return gap
+
+    initial_primal_dual_gap = None
+    if primal_dual_gap_func is not None:
+        initial_primal_dual_gap = evaluate_primal_dual_gap(params_x, params_y1, params_y2[0])
+    if warm_start_lower and warm_start_callback is not None:
+        warm_start_callback({
+            **warm_start_stats,
+            "primal_dual_gap": initial_primal_dual_gap,
+        })
 
     def h_lagrangian():
         upper_term = upper_smooth(params_x, params_y1)
@@ -751,6 +924,17 @@ def optimize_bilevel_constrained_minimax(
     prox_z1_z2 = [_scale_prox_spec(p, rho) for p in prox_y1_funcs] + [_scale_prox_spec(prox_lagrange_multipliers, rho)]
     ncwc_objective = _adapt_ncwc_objective(objective_func, len(params_x), len(params_y1))
     ncwc_metrics = _adapt_ncwc_metrics(metrics_func, len(params_x), len(params_y1))
+    if primal_dual_gap_func is not None:
+        primal_metrics = ncwc_metrics
+
+        def ncwc_metrics(min_block, max_block):
+            metrics = {} if primal_metrics is None else dict(primal_metrics(min_block, max_block) or {})
+            y_start = len(params_x)
+            dual_start = y_start + len(params_y1)
+            metrics["primal_dual_gap"] = evaluate_primal_dual_gap(
+                min_block[:y_start], min_block[y_start:dual_start], min_block[dual_start],
+            )
+            return metrics
 
     computed_lip_h = (
         L_grad_f1
@@ -759,6 +943,16 @@ def optimize_bilevel_constrained_minimax(
     lip_h = computed_lip_h if lip_override is None else lip_override
     print(f"Using lip_h={lip_h:.3e} (computed {computed_lip_h:.3e}, override {lip_override})")
 
+    gradient_func = gradient_difference_func = None
+    if saddle_gradient_factory is not None:
+        gradient_func, gradient_difference_func = saddle_gradient_factory(rho)
+    ncwc_box_bounds = None
+    if box_bounds is not None:
+        dual_bounds = (0.0, float(lagrange_bound))
+        ncwc_box_bounds = {
+            "min": [box_bounds] * (len(params_x) + len(params_y1)) + [dual_bounds],
+            "max": [box_bounds] * len(params_z1) + [dual_bounds],
+        }
     solver_stats = optimize_NCWC(
         params_x + params_y1 + params_y2,
         params_z1 + params_z2,
@@ -771,11 +965,16 @@ def optimize_bilevel_constrained_minimax(
         epsilon_0,
         lr=lr,
         max_iter=max_iter,
+        subproblem_max_iter=scsc_max_iter,
+        subproblem_max_inner_iter=scsc_max_inner_iter,
         verbose=verbose,
         log_every=log_every,
         objective_func=ncwc_objective,
         metrics_func=ncwc_metrics,
         progress_callback=progress_callback,
+        gradient_func=gradient_func,
+        gradient_difference_func=gradient_difference_func,
+        box_bounds=ncwc_box_bounds,
     )
 
     return {
@@ -789,5 +988,7 @@ def optimize_bilevel_constrained_minimax(
         "lip_override": lip_override,
         "warm_start_lower": warm_start_lower,
         "warm_start_stats": warm_start_stats,
+        "initial_primal_dual_gap": initial_primal_dual_gap,
         "solver_stats": solver_stats,
+        **_solver_status(solver_stats),
     }
