@@ -855,8 +855,8 @@ def optimize_NCWC(
         if ncwc_terminated:
             terminated = True
             break
-        if inner_failed:
-            break
+        # if inner_failed:
+        #     break
 
         x_k = x_kp1
 

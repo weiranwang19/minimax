@@ -430,7 +430,7 @@ def optimize_bilevel_contrained_fop_practical(
         if not last_solver_result["solver_stats"]["terminated"]:
             status = _solver_status(last_solver_result["solver_stats"])
             termination_reason, budget_exhausted = status["termination_reason"], status["budget_exhausted"]
-            break
+            # break
         if target_met:
             terminated = True
             break
@@ -705,7 +705,7 @@ def optimize_bilevel_constrained_smo(
         if not subproblem_stats["terminated"]:
             status = _solver_status(subproblem_stats)
             termination_reason, budget_exhausted = status["termination_reason"], status["budget_exhausted"]
-            break
+            # break
         lambda_k = lambda_next
         if epsilon_k <= epsilon:
             terminated = True

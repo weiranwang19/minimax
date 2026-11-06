@@ -21,7 +21,7 @@ torch.set_default_dtype(torch.float64)
 
 # Section 4.2 / Table 2 experiment controls. `PROBLEM_SIZES` is the actual grid of (n, m, l) values; the rest are algorithmic parameters that can be tuned for better performance.
 # PROBLEM_SIZES = [(100 * k, 100 * k, 5 * k) for k in range(1,4)]
-PROBLEM_SIZES = [(5,5,2)]
+PROBLEM_SIZES = [(100,100,5)]
 # Zero-based instance indices. Edit this list to rerun only failed/interrupted instances
 # while keeping the exact same sampled instance for each (n, m, l) across methods.
 # NUM_INSTANCES = list(range(5))
@@ -46,16 +46,16 @@ SMO_EPSILON_0 = 1.0
 SMO_TAU = 0.8
 SMO_MAX_STAGES = None  # Follow the tolerance schedule unless explicitly capped.
 SMO_NCWC_MAX_ITERS = 1000
-SMO_SCSC_MAX_OUTER_ITERS = 1000
-SMO_SCSC_MAX_INNER_ITERS = 10000
+SMO_SCSC_MAX_OUTER_ITERS = 200
+SMO_SCSC_MAX_INNER_ITERS = 1000
 SMO_LIP_SCALE = None
 SMO_AGD_MAX_ITERS = None
 SMO_STABLE_BOX_RESIDUAL = True
 
 # GCMO
 GCMO_EPS = 1e-2
-GCMO_NCWC_MAX_ITERS = 100000
-GCMO_SCSC_MAX_OUTER_ITERS = 10000
+GCMO_NCWC_MAX_ITERS = 500
+GCMO_SCSC_MAX_OUTER_ITERS = 300
 GCMO_SCSC_MAX_INNER_ITERS = 1000
 GCMO_LAGRANGE_BOUND = 200
 GCMO_LIP_OVERRIDE = None
